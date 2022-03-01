@@ -34,10 +34,8 @@ Tested Linux distributions are Debian, Alpine and Arch.
 This script depends on the following tools to work.
 ```
 dd
-bash
-setarch
-echo
-printf
+bash | zsh | ash (busybox)
+setarch | linux64 (busybox)
 head
 tail
 cut
