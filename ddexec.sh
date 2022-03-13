@@ -83,7 +83,7 @@ search_section()
                        cut -d' ' -f2- | tr -d ' \n')
     fi
 
-    for i in $(seq $((shentnum - 1)))
+    for i in $(seq 0 $((shentnum - 1)))
     do
         local section=${sections:$((i * shentsize * 2)):$((shentsize * 2))}
         local section_name_idx=$((0x$(endian ${section:0:8})))
@@ -149,7 +149,7 @@ search_symbol()
 
     local symbol1_off=""
     local symbol2_off=""
-    for i in $(seq $((symtab_ent_num - 1)))
+    for i in $(seq 0 $((symtab_ent_num - 1)))
     do
         local symtabent=${symtab:$((i*symtabentsize*2)):$((symtabentsize*2))}
         local symbol_name_idx=$((0x$(endian ${symtabent:0:8})))
@@ -202,18 +202,8 @@ shellcode_loader()
     fi
 
     local entry=$((0x$(endian ${header:48:16})))
-    if [ $entry -lt $((0x400000)) ] # For PIE binaries
-    then
-        if [ $1 = "bin" ]
-        then
-            base=$((0x400000))
-        else
-            base=$((0x$3))
-        fi
 
-        entry=$(endian $(printf %016x $((entry + base))))
-    fi
-
+    local base=""
     local writebin=""
     local sc=""
     if [ $1 = "bin" ]
@@ -224,7 +214,7 @@ shellcode_loader()
         sc=$sc"4989c041ba12000000" # and prepare for the mmap()s
     fi
 
-    for i in $(seq $((phnum - 1)))
+    for i in $(seq 0 $((phnum - 1)))
     do
         local phent=${phtab:$((i * phentsize * 2)):$((phentsize * 2))}
         local phenttype=${phent:0:8}
@@ -232,7 +222,22 @@ shellcode_loader()
         local prot=$(endian ${phent:8:8})
         local offset=$(endian ${phent:16:16})
         local virt=$(endian ${phent:32:16})
-        if [ $((0x$virt)) -lt $base ] # For PIE binaries
+        if [ $((0x$offset)) -eq 0 ]
+        then
+            if [ $((0x$virt)) -lt $((0x400000)) ] # PIE binaries
+            then
+                if [ $1 = "bin" ]
+                then
+                    base=$((0x400000))
+                else
+                    base=$((0x$3))
+                fi
+                entry=$((entry + base))
+            else                                  # Non-PIE
+                base=$((0x$virt))
+            fi
+        fi
+        if [ $((0x$virt)) -lt $base ] # PIE binaries
         then
             virt=$((0x$virt + base))
             virt=$(printf %016x $virt)
@@ -271,6 +276,8 @@ shellcode_loader()
             sc=$sc"ba"$perm
             sc=$sc"0f05"
 
+            # Pieces of the binary that we need to write
+            # (we only load things the binary itself asks us to)
             writebin=$writebin$(echo $bin | base64 -d | od -v -t x1 -N \
                      $((0x$(endian $fsize))) -j $((0x$offset)) |\
                      head -n-1 | cut -d' ' -f2- | tr -d ' \n')
@@ -316,6 +323,8 @@ shellcode_loader()
         fi
     done
 
+    entry=$(endian $(printf %016x $entry))
+
     # Zero the bss
     local bss_addr=0
     if [ $1 = "file" ]
@@ -325,12 +334,18 @@ shellcode_loader()
     else
         bss_addr=$(echo -n $bin | search_section bin "" .bss | cut -d' ' -f3)
     fi
-    bss_addr=$((bss_addr + base))
-    local bss_size=$(((bss_addr & (~0xfff)) + 4096 - bss_addr))
-    bss_addr=$(printf %016x $bss_addr)
-    bss_size=$((bss_size / 8))
-    bss_size=$(printf %08x $bss_size)
-    sc=$sc"4831c0b9"$(endian $bss_size)"48bf"$(endian $bss_addr)"f348ab"
+    if [ -n "$bss_addr" ]
+    then
+        if [ $bss_addr -lt $base ]
+        then
+            bss_addr=$((bss_addr + base))
+        fi
+        local bss_size=$(((bss_addr & (~0xfff)) + 4096 - bss_addr))
+        bss_addr=$(printf %016x $bss_addr)
+        bss_size=$((bss_size / 8))
+        bss_size=$(printf %08x $bss_size)
+        sc=$sc"4831c0b9"$(endian $bss_size)"48bf"$(endian $bss_addr)"f348ab"
+    fi
 
     phnum=$(endian $(printf %02x $phnum))
     phentsize=$(endian $(printf %02x $phentsize))
