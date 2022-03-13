@@ -69,7 +69,7 @@ This problems have solutions that, although they are not perfect, are good:
 The steps are relatively easy and do not require any kind of expertise to understand them. Anyone with a basic understanding of exploiting and with some knowledge of the ELF format can follow this.
 * Find base address of the libc and the loader. Since there is no ASLR we do not need a memory leak, so this is very easy. It can be done just by running a program without ASLR and looking at its `/proc/$pid/maps`.
 * Parse the symbols in the libc looking for the offset of the `read()` and `mprotect()` functions. Now we can obtain their virtual addresses, and therefore craft a very basic `mprotect() + read()` ROP.
-* Parse the binary we want to run to find the mappings it needs. Copy also the scheme of the mappings for the loader from the `/proc/$pid/maps` used before. Create a "shell"code to create this mappings, read the binaries into them and set the permissions. Finally initialize the stack with the arguments for the program and create an auxiliary vector (needed by the loader), then jump into the loader and let it do the rest. This "shell"code must perform basically the same operations as the kernel does upon each call to `execve()`.
+* Parse the binary we want to run and the loader to find out what mappings they need. Create a "shell"code to create this mappings, read the binaries into them and set the permissions up. Finally initialize the stack with the arguments for the program and create an auxiliary vector (needed by the loader), then jump into the loader and let it do the rest. This "shell"code must perform basically the same operations as the kernel does upon each call to `execve()`.
 * Overwrite the `RIP(s)` of some function, preferrably the `write()`'s one, with the ROP. A _retsled_ will make this easier. However we can not write more than a page at a time (4096 bytes), since `dd` makes calls to `write()` of this size maximum. So our ROP is limited to 4096 bytes (which is not bad at all).
 * Pass the "shell"code to the stdin of the now hijacked `dd` process (will be `read()` by the ROP and executed).
 * Pass the program we want to run to the stdin of the process (will be `read()` by said "shell"code).
@@ -104,4 +104,4 @@ This technique can be prevented in several ways.
 - Check if `dd` makes more `mmaps()` than it should.
 
 ## Questions? Death threats?
-Feel free to write me to [arget@protonmail.ch](mailto:arget@protonmail.ch) or DM me.
+Feel free to send me an email to [arget@protonmail.ch](mailto:arget@protonmail.ch).
