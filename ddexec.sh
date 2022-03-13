@@ -43,6 +43,7 @@ search_section()
         local header=$(echo -n $data | base64 -d | od -v -t x1 -N 64 |\
                        head -n -1 | cut -d' ' -f 2- | tr -d ' \n')
     fi
+    # I'm not commenting this, RTFM.
     local shoff=${header:80:16}
     shoff=$(endian $shoff)
     shoff=$((0x$shoff))
@@ -114,7 +115,6 @@ search_section()
     done
 }
 # search_symbol $filename $symbol1 $symbol2
-# (the slowest part of this script, with difference)
 search_symbol()
 {
     local strtab_off=$(search_section file $1 .dynstr)
@@ -203,6 +203,7 @@ shellcode_loader()
 
     local entry=$((0x$(endian ${header:48:16})))
 
+    local stack_exec=0
     local base=""
     local writebin=""
     local sc=""
@@ -218,10 +219,20 @@ shellcode_loader()
     do
         local phent=${phtab:$((i * phentsize * 2)):$((phentsize * 2))}
         local phenttype=${phent:0:8}
-        if [ $phenttype != "01000000" ]; then continue; fi # type != LOAD
         local prot=$(endian ${phent:8:8})
         local offset=$(endian ${phent:16:16})
         local virt=$(endian ${phent:32:16})
+        local fsize=${phent:64:16}
+        local memsz=$(endian ${phent:80:16})
+        if [ $phenttype = "51e57464" ] # type == GNU_STACK
+        then
+            if [ $((0x$prot & 1)) -eq 1 ]
+            then
+                stack_exec=1 # Can't do this here, would spoil registers
+            fi
+            continue
+        fi
+        if [ $phenttype != "01000000" ]; then continue; fi # type != LOAD
         if [ $((0x$offset)) -eq 0 ]
         then
             if [ $((0x$virt)) -lt $((0x400000)) ] # PIE binaries
@@ -242,8 +253,6 @@ shellcode_loader()
             virt=$((0x$virt + base))
             virt=$(printf %016x $virt)
         fi
-        local fsize=${phent:64:16}
-        local memsz=$(endian ${phent:80:16})
         local finalvirt=$((((0x$virt + 0x$memsz) & (~0xfff)) + 0x1000))
 
         local origvirt=$(endian $virt)
@@ -322,6 +331,15 @@ shellcode_loader()
             phaddr=$((phoff + 0x$(endian $origvirt)))
         fi
     done
+    # The program asks us to make the stack executable
+    if [ $stack_exec -eq 1 ]
+    then
+        sc=$sc"4831c0b00a"
+        sc=$sc"48bf"$(endian "00007ffffffde000") # Bottom of stack
+        sc=$sc"be""00100200" # Size of stack
+        sc=$sc"ba""07000000" # RWX
+        sc=$sc"0f05"
+    fi
 
     entry=$(endian $(printf %016x $entry))
 
