@@ -30,6 +30,16 @@ Currently **only x86-64** architecture is supported. I plan on changing this soo
 
 Tested Linux distributions are Debian, Alpine and Arch.
 
+### A little trick
+In bash and (surprisingly) ash you may do the following in a shell:
+```
+$ ddexec()
+> {
+>    # Paste here the script as is
+> }
+$ base64 -w0 /bin/ls | ddexec /bin/ls -lA
+```
+
 ## Dependencies
 This script depends on the following tools to work.
 ```
@@ -69,7 +79,12 @@ This problems have solutions that, although they are not perfect, are good:
 The steps are relatively easy and do not require any kind of expertise to understand them. Anyone with a basic understanding of exploiting and with some knowledge of the ELF format can follow this.
 * Find base address of the libc and the loader. Since there is no ASLR we do not need a memory leak, so this is very easy. It can be done just by running a program without ASLR and looking at its `/proc/$pid/maps`.
 * Parse the symbols in the libc looking for the offset of the `read()` and `mprotect()` functions. Now we can obtain their virtual addresses, and therefore craft a very basic `mprotect() + read()` ROP.
-* Parse the binary we want to run and the loader to find out what mappings they need. Create a "shell"code to create this mappings, read the binaries into them and set the permissions up. Finally initialize the stack with the arguments for the program and create an auxiliary vector (needed by the loader), then jump into the loader and let it do the rest. This "shell"code must perform basically the same operations as the kernel does upon each call to `execve()`.
+* Parse the binary we want to run and the loader to find out what mappings they need. Then craft a "shell"code that will:
+    * Create said mappings.
+    * Read the binaries into them.
+    * Set up permissions.
+    * Finally initialize the stack with the arguments for the program and place the auxiliary vector (needed by the loader)
+    * Jump into the loader and let it do the rest. Basically it will do the same things the kernel does upon each call to `execve()`.
 * Overwrite the `RIP(s)` of some function, preferrably the `write()`'s one, with the ROP. A _retsled_ will make this easier. However we can not write more than a page at a time (4096 bytes), since `dd` makes calls to `write()` of this size maximum. So our ROP is limited to 4096 bytes (which is not bad at all).
 * Pass the "shell"code to the stdin of the now hijacked `dd` process (will be `read()` by the ROP and executed).
 * Pass the program we want to run to the stdin of the process (will be `read()` by said "shell"code).
