@@ -248,14 +248,11 @@ shellcode_loader()
                 fi
                 entry=$((entry + base))
             else                                  # Non-PIE
-                base=$((0x$virt))
+                base=0
             fi
         fi
-        if [ $((0x$virt)) -lt $base ] # PIE binaries
-        then
-            virt=$((0x$virt + base))
-            virt=$(printf %016x $virt)
-        fi
+        virt=$(printf %016x $((0x$virt + base)))
+
         local finalvirt=$((((0x$virt + 0x$memsz) & (~0xfff)) + 0x1000))
 
         local origvirt=$(endian $virt)
@@ -301,7 +298,7 @@ shellcode_loader()
             local sc2=""
             local filelen=$((($(wc -c < $2) & (~0xfff)) + 0x1000))
             # If the mapping exceeds the file, split it into two
-            # (some Linux distros like Alpine, don't like it)
+            # (some Linux distros, like Alpine, don't like it)
             if [ $((0x$off + 0x$(endian $memsz))) -gt $filelen ]
             then
                 local diff=$((0x$off + 0x$(endian $memsz) - $filelen))
@@ -334,24 +331,20 @@ shellcode_loader()
             phaddr=$((phoff + 0x$(endian $origvirt)))
         fi
     done
-
     entry=$(endian $(printf %016x $entry))
 
     # Zero the bss
     local bss_addr=0
     if [ $1 = "file" ]
     then
-        sc=$sc"4831c0b0034c89c70f05" # close() the interpreter file
+        sc=$sc"4831c0b0034c89c70f05" # close() the file
         bss_addr=$(search_section file $2 .bss | cut -d' ' -f3)
     else
         bss_addr=$(echo -n $bin | search_section bin "" .bss | cut -d' ' -f3)
     fi
     if [ -n "$bss_addr" ]
     then
-        if [ $bss_addr -lt $base ]
-        then
-            bss_addr=$((bss_addr + base))
-        fi
+        bss_addr=$((bss_addr + base))
         local bss_size=$(((bss_addr & (~0xfff)) + 4096 - bss_addr))
         bss_addr=$(printf %016x $bss_addr)
         bss_size=$((bss_size / 8))
@@ -359,8 +352,8 @@ shellcode_loader()
         sc=$sc"4831c0b9"$(endian $bss_size)"48bf"$(endian $bss_addr)"f348ab"
     fi
 
-    phnum=$(endian $(printf %02x $phnum))
-    phentsize=$(endian $(printf %02x $phentsize))
+    phnum=$(endian $(printf %016x $phnum))
+    phentsize=$(endian $(printf %016x $phentsize))
     phaddr=$(endian $(printf %016x $phaddr))
 
     echo -n "$sc $writebin $phnum $phentsize $phaddr $entry"
@@ -406,9 +399,9 @@ craft_stack()
     at_random=$(endian $(printf %016x $at_random))
     local auxv=""
     auxv=$auxv"0300000000000000"$1                 # phaddr
-    auxv=$auxv"0400000000000000"$2"00000000000000" # phentsize
-    auxv=$auxv"0500000000000000"$3"00000000000000" # phnum
-    auxv=$auxv"0700000000000000"$(endian $4)"0000" # ld_base
+    auxv=$auxv"0400000000000000"$2                 # phentsize
+    auxv=$auxv"0500000000000000"$3                 # phnum
+    auxv=$auxv"0700000000000000"$(endian $4)       # ld_base
     auxv=$auxv"0900000000000000"$5                 # entry
     auxv=$auxv"1900000000000000"$at_random         # AT_RANDOM
     auxv=$auxv"0000000000000000""0000000000000000" # AT_NULL
@@ -438,7 +431,7 @@ craft_stack()
     # sc=$sc"0f05"
     # sc=$sc"b89d000000" # prctl
     # sc=$sc"bf23000000" # PR_SET_MM
-    # sc=$sc"be09000000" # PR_SET_MM_ARG_START
+    # sc=$sc"be09000000" # PR_SET_MM_ARG_END
     # sc=$sc"48baf8efffffff7f0000"
     # sc=$sc"0f05"
 
@@ -465,8 +458,8 @@ craft_payload2()
     local entry=$(echo $loadbinsc | cut -d' ' -f6)
     sc=$sc$(echo $loadbinsc | cut -d' ' -f1)
 
-    local ld_base=$(echo "$dd_maps" | grep `readlink -f $interp` |\
-                    head -n1 | cut -d'-' -f1)
+    local ld_base=0000$(echo "$dd_maps" | grep `readlink -f $interp` |\
+                        head -n1 | cut -d'-' -f1)
 
     ### Initial stack structures. Arguments and a rudimentary auxv ###
     local stack=$(craft_stack $phaddr $phentsize $phnum $ld_base $entry "$@")
