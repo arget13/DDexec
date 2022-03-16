@@ -79,12 +79,12 @@ This problems have solutions that, although they are not perfect, are good:
 The steps are relatively easy and do not require any kind of expertise to understand them. Anyone with a basic understanding of exploiting and with some knowledge of the ELF format can follow this.
 * Find base address of the libc and the loader. Since there is no ASLR we do not need a memory leak, so this is very easy. It can be done just by running a program without ASLR and looking at its `/proc/$pid/maps`.
 * Parse the symbols in the libc looking for the offset of the `read()` and `mprotect()` functions. Now we can obtain their virtual addresses, and therefore craft a very basic `mprotect() + read()` ROP.
-* Parse the binary we want to run and the loader to find out what mappings they need. Then craft a "shell"code that will:
+* Parse the binary we want to run and the loader to find out what mappings they need. Then craft a "shell"code that will perform, broadly speaking, the same steps that kernel does upon each call to `execve()`:
     * Create said mappings.
     * Read the binaries into them.
     * Set up permissions.
     * Finally initialize the stack with the arguments for the program and place the auxiliary vector (needed by the loader)
-    * Jump into the loader and let it do the rest. Basically it will do the same things the kernel does upon each call to `execve()`.
+    * Jump into the loader and let it do the rest (load libraries needed by the program).
 * Overwrite the `RIP(s)` of some function, preferrably the `write()`'s one, with the ROP. A _retsled_ will make this easier. However we can not write more than a page at a time (4096 bytes), since `dd` makes calls to `write()` of this size maximum. So our ROP is limited to 4096 bytes (which is not bad at all).
 * Pass the "shell"code to the stdin of the now hijacked `dd` process (will be `read()` by the ROP and executed).
 * Pass the program we want to run to the stdin of the process (will be `read()` by said "shell"code).
