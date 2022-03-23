@@ -61,7 +61,7 @@ sleep
 ## The technique
 If you are able to modify arbitrarily the memory of a process then you can take over it. This can be used to hijack an already existing process and replace it with another program. We can achieve this either by using the `ptrace()` syscall (which requires you to have the ability to execute syscalls or to have gdb available on the system) or, more interestingly, writing to `/proc/$pid/mem`.
 
-The file `/proc/$pid/mem` is a one-to-one mapping of the entire address space of a process (from `0x0000000000000000` to `0x7ffffffffffff000`). This means that reading from or writing to this file at an offset `x` is the same as reading from or modifying the contents at the virtual address `x`.
+The file `/proc/$pid/mem` is a one-to-one mapping of the entire address space of a process (_e. g._ from `0x0000000000000000` to `0x7ffffffffffff000` in x86-64). This means that reading from or writing to this file at an offset `x` is the same as reading from or modifying the contents at the virtual address `x`.
 
 Now, we have four basic problems to face:
 - ASLR.
@@ -79,7 +79,7 @@ This problems have solutions that, although they are not perfect, are good:
 The steps are relatively easy and do not require any kind of expertise to understand them. Anyone with a basic understanding of exploiting and with some knowledge of the ELF format can follow this.
 * Find base address of the libc and the loader. Since there is no ASLR we do not need a memory leak, so this is very easy. It can be done just by running a program without ASLR and looking at its `/proc/$pid/maps`.
 * Parse the symbols in the libc looking for the offset of the `read()` and `mprotect()` functions. Now we can obtain their virtual addresses, and therefore craft a very basic `mprotect() + read()` ROP.
-* Parse the binary we want to run and the loader to find out what mappings they need. Then craft a "shell"code that will perform, broadly speaking, the same steps that kernel does upon each call to `execve()`:
+* Parse the binary we want to run and the loader to find out what mappings they need. Then craft a "shell"code that will perform, broadly speaking, the same steps that the kernel does upon each call to `execve()`:
     * Create said mappings.
     * Read the binaries into them.
     * Set up permissions.
@@ -102,6 +102,8 @@ Well, there are a couple of TODOs. Besides this, you may have noticed that I do 
 - Allow run the program with a non-empty environment.
 - Take into account that this can be easily adapted to every program that allows seeking through a file.
 
+You may find useful the project's [wiki](https://github.com/arget13/DDexec/wiki) (which I am still writing).
+
 Anyway, **all contribution is welcome**. Feel free to fork and PR.
 
 ## Credit
@@ -116,7 +118,7 @@ This technique can be prevented in several ways.
 - Not installing `dd` (maybe even go distroless?).
 - Making `dd` executable only by root.
 - Using a kernel compiled without support for the `mem` file.
-- Check if `dd` makes more `mmaps()` than it should.
+- Check if `dd` calls `mprotect()` with `PROT_EXEC`.
 
 ## Questions? Death threats?
 Feel free to send me an email to [arget@protonmail.ch](mailto:arget@protonmail.ch).

