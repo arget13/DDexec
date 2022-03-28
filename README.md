@@ -26,7 +26,7 @@ And yes. It works with meterpreter.
 
 Supported shells are bash, zsh and ash.
 
-Currently **only x86-64** architecture is supported. I plan on changing this soon.
+Currently **only x86-64** architecture is supported, but you can follow the progress in the [ARM/Aarch64 branch](https://github.com/arget13/DDexec/tree/arm). The shellcode already works on Aarch64, the problem is that the creation of a ROP on this architecture is [tricky](https://github.com/arget13/DDexec/issues/7), especially when you have to implement also the gadget search.
 
 Tested Linux distributions are Debian, Alpine and Arch.
 
