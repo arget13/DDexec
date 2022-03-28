@@ -350,9 +350,11 @@ shellcode_loader()
 # craft_stack $phaddr $phentsize $phnum $ld_base $entry $argv0 .. $argvn
 craft_stack()
 {
+    local stack_top=$(echo "$dd_maps" | grep -F "[stack]" |\
+                      cut -d' ' -f1 | cut -d'-' -f2)
     # Calculate position of argv[0]
     args_len=$(echo "$@" | cut -d' ' -f6- | wc -c)
-    argv0_addr=$((0x7ffffffff000 - 8 - $args_len))
+    argv0_addr=$((0x$stack_top - 8 - $args_len))
 
     # Place arguments for main()
     local count=0
@@ -402,7 +404,7 @@ craft_stack()
     # read() all this data into the stack and make rsp point to it
     local sc=""
     local stack_len=$((${#stack} / 2))
-    local rsp=$(endian $(printf %016x $((0x7ffffffff000 - $stack_len))))
+    local rsp=$(endian $(printf %016x $((0x$stack_top - $stack_len))))
     stack_len=$(endian $(printf %08x $stack_len))
     sc=$sc"48bc"$rsp
     sc=$sc"4831ff4889e6ba${stack_len}4889f80f0529c24801c685d275f3"
@@ -410,20 +412,6 @@ craft_stack()
     # Reuse canary and PTR_MANGLE key, place them in AT_RANDOM field of the auxv
     sc=$sc"48bb"$at_random
     sc=$sc"64488b04252800000048890380c30864488b042530000000488903"
-
-    # A failed experiment...
-    # # prctl()
-    # sc=$sc"b89d000000" # prctl
-    # sc=$sc"bf23000000" # PR_SET_MM
-    # sc=$sc"be08000000" # PR_SET_MM_ARG_START
-    # sc=$sc"48ba"$(endian $(printf %016x $argv0_addr))
-    # sc=$sc"4d31d24d89d0" # arg4 = arg5 = 0
-    # sc=$sc"0f05"
-    # sc=$sc"b89d000000" # prctl
-    # sc=$sc"bf23000000" # PR_SET_MM
-    # sc=$sc"be09000000" # PR_SET_MM_ARG_END
-    # sc=$sc"48baf8efffffff7f0000"
-    # sc=$sc"0f05"
 
     echo -n $stack $sc
 }
