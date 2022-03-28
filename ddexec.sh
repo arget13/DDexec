@@ -9,16 +9,7 @@ DEBUG=0
 # Endian conversion
 endian()
 {
-    local result=""
-    result=${1:14:2}
-    result=${result}${1:12:2}
-    result=${result}${1:10:2}
-    result=${result}${1:8:2}
-    result=${result}${1:6:2}
-    result=${result}${1:4:2}
-    result=${result}${1:2:2}
-    result=${result}${1:0:2}
-    echo -n "$result"
+    echo -n ${1:14:2}${1:12:2}${1:10:2}${1:8:2}${1:6:2}${1:4:2}${1:2:2}${1:0:2}
 }
 
 # search_section "file" $filename $section
@@ -215,9 +206,15 @@ shellcode_loader()
         then
             if [ $((0x$prot & 1)) -eq 1 ] # Stack must be executable
             then
+                local stack_bottom=$(echo "$dd_maps" | grep -F "[stack]" |\
+                                     cut -d' ' -f1)
+                local stack_top=$(echo $stack_bottom | cut -d'-' -f2)
+                local stack_bottom=0000$(echo $stack_bottom | cut -d'-' -f1)
+                local stack_size=$((0x$stack_top - 0x$stack_bottom))
+                stack_size=$(printf %08x $stack_size)
                 sc=$sc"4831c0b00a"
-                sc=$sc"48bf"$(endian "00007ffffffde000") # Bottom of stack
-                sc=$sc"be""00100200" # Size of stack
+                sc=$sc"48bf"$(endian $stack_bottom)
+                sc=$sc"be"$(endian $stack_size)
                 sc=$sc"ba""07000000" # RWX
                 sc=$sc"0f05"
             fi
@@ -262,7 +259,7 @@ shellcode_loader()
             # mmap()
             sc=$sc"4831c0b00948bf"$virt
             sc=$sc"be"$memsz
-            sc=$sc"ba03000000" # RW
+            sc=$sc"ba""03000000" # RW
             sc=$sc"0f05"
 
             # read()
@@ -303,7 +300,6 @@ shellcode_loader()
                 sc2=$sc2"4831c0b00948bf"$virt2
                 sc2=$sc2"be"$diff
                 sc2=$sc2"ba"$perm
-                sc2=$sc2"49b90000000000000000"
                 sc2=$sc2"0f05"
                 sc2=$sc2"4d89e0"
             fi
@@ -337,7 +333,8 @@ shellcode_loader()
     if [ -n "$bss_addr" ]
     then
         bss_addr=$((bss_addr + base))
-        local bss_size=$(((bss_addr & (~0xfff)) + 4096 - bss_addr))
+        # Zero until the end of page
+        local bss_size=$((((bss_addr + 0x1000) & (~0xfff)) - bss_addr))
         bss_addr=$(printf %016x $bss_addr)
         bss_size=$((bss_size / 8))
         bss_size=$(printf %08x $bss_size)

