@@ -26,6 +26,7 @@ search_section()
         local header=$(echo -n $data | base64 -d | od -v -t x1 -N 64 |\
                        head -n -1 | cut -d' ' -f 2- | tr -d ' \n')
     fi
+    # I'm not commenting this, RTFM.
     local shoff=${header:80:16}
     shoff=$(endian $shoff)
     shoff=$((0x$shoff))

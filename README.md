@@ -40,7 +40,7 @@ $ ddexec()
 $ base64 -w0 /bin/ls | ddexec /bin/ls -lA
 ```
 
-## Dependencies
+## Dependencies & limitations
 This script depends on the following tools to work.
 ```
 dd
@@ -57,6 +57,12 @@ tr
 base64
 sleep
 ```
+
+### Limitations
+On the other hand, the default `seccomp` configuration that uses Docker forbids the syscall `personality()`, very much needed by `setarch` to disable ASLR. You can override this behaviour with the option `--security-opt seccomp=unconfined` or using another `seccomp` that allows this syscall, like [this one](https://github.com/ros-infrastructure/buildfarm_deployment/blob/master/modules/agent_files/files/docker-default-seccomp-with-personality.json). The funny thing is that Docker is configured this way to prevent the container from enabling BSD emulation...
+
+Fortunately Kubernetes uses Docker with `seccomp` disabled.
+
 
 ## The technique
 If you are able to modify arbitrarily the memory of a process then you can take over it. This can be used to hijack an already existing process and replace it with another program. We can achieve this either by using the `ptrace()` syscall (which requires you to have the ability to execute syscalls or to have gdb available on the system) or, more interestingly, writing to `/proc/$pid/mem`.
@@ -118,6 +124,7 @@ This technique can be prevented in several ways.
 - Not installing `dd` (maybe even go distroless?).
 - Making `dd` executable only by root.
 - Using a kernel compiled without support for the `mem` file.
+- Not installing `setarch/linux64` or making anything that prevents the disabling of ASLR (like Docker does, even though their intentions were different).
 - Check if `dd` calls `mprotect()` with `PROT_EXEC`.
 
 ## Questions? Death threats?
