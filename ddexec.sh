@@ -478,7 +478,7 @@ craft_payload2()
 
 read_text()
 {
-    if [ $arch = "aarch64" ]; then return; fi
+    if [ $arch != "x86_64" ]; then echo "Not supported yet" >&2; return; fi
     local text_off=$(search_section file $1 .text)
     local text_size=$(echo $text_off | cut -d' ' -f2)
     text_off=$(echo $text_off | cut -d' ' -f1)
@@ -488,7 +488,7 @@ read_text()
 }
 find_gadget()
 {
-    if [ $arch = "aarch64" ]; then return; fi
+    if [ $arch != "x86_64" ]; then echo "Not supported yet" >&2; return; fi
     local after=${1#*$4}
     local off=$((${#1} - ${#after} - ${#4}))
     off=$((off / 2))
@@ -498,7 +498,7 @@ find_gadget()
 }
 craft_rop()
 {
-    if [ $arch = "aarch64" ]; then return; fi
+    if [ $arch != "x86_64" ]; then echo "Not supported yet" >&2; return; fi
     # Where is located the libc without ASLR in this system
     local libc_base=$(echo "$dd_maps" | grep $libc_path | head -n1 |\
                       cut -d'-' -f1)
