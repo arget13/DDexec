@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 filename=/bin/dd
 

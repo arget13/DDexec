@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # Usage: `bash test.sh` (only supported shell for this script is bash)
 
