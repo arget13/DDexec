@@ -71,28 +71,24 @@ The file `/proc/$pid/mem` is a one-to-one mapping of the entire address space of
 
 Now, we have four basic problems to face:
 - ASLR.
-- Executable pages are read-only.
 - If we try to read or write to an address not mapped in the address space of the program we will get an I/O error.
 - In general only root and the program owner of the file may modify it.
 
 This problems have solutions that, although they are not perfect, are good:
 - For ASLR we have the `setarch` utility (on busybox distributions it is `linux64`).
-- To make an executable page writable we will need to make a bit of basic exploiting: **ROP**.
 - So we need to `lseek()` over the file. From the shell this cannot be done unless using the infamous `dd`.
 - Well, we make `dd` exploit itself. This also has the benefit of allowing us to use `/proc/self` instead of having to find the PID of the targetted program.
 
 ### In more detail
 The steps are relatively easy and do not require any kind of expertise to understand them. Anyone with a basic understanding of exploiting and with some knowledge of the ELF format can follow this.
 * Find base address of the libc and the loader. Since there is no ASLR we do not need a memory leak, so this is very easy. It can be done just by running a program without ASLR and looking at its `/proc/$pid/maps`.
-* Parse the symbols in the libc looking for the offset of the `read()` and `mprotect()` functions. Now we can obtain their virtual addresses, and therefore craft a very basic `mprotect() + read()` ROP.
 * Parse the binary we want to run and the loader to find out what mappings they need. Then craft a "shell"code that will perform, broadly speaking, the same steps that the kernel does upon each call to `execve()`:
     * Create said mappings.
     * Read the binaries into them.
     * Set up permissions.
     * Finally initialize the stack with the arguments for the program and place the auxiliary vector (needed by the loader)
     * Jump into the loader and let it do the rest (load libraries needed by the program).
-* Overwrite the `RIP(s)` of some function, preferrably the `write()`'s one, with the ROP. A _retsled_ will make this easier. However we can not write more than a page at a time (4096 bytes), since `dd` makes calls to `write()` of this size maximum. So our ROP is limited to 4096 bytes (which is not bad at all).
-* Pass the "shell"code to the stdin of the now hijacked `dd` process (will be `read()` by the ROP and executed).
+* Overwrite a executable page with the shellcode, the `mem` file allows to write to non-writable files...
 * Pass the program we want to run to the stdin of the process (will be `read()` by said "shell"code).
 * At this point it is up to the loader to load the necessary libraries for our program and jump into it.
 
@@ -117,6 +113,8 @@ Recently I have come to know that [Sektor7](https://www.sektor7.net) had already
 
 Despite this, this technique has been thought and developed by me independently in its entirety. I have also gone much further creating an easy to use implementation and avoiding the `memfd_create() + execve()` technique (which is very noisy). Also, an error committed in their version is to rely on a GOT overwrite, when most of the current compilations of dd are **full RelRO**. Anyway, I hope I will be able to spread the use of this technique much further.
 
+I would like to thank [David Buchanan](https://github.com/DavidBuchanan314) because [this tweet](https://twitter.com/David3141593/status/1386661837073174532) made me realize how stupid I was for not noticing that `mem` allowed to write to non-writable pages, hence making the ROP unnecessary. This also has the effect of making a lot more easier to port to another architectures.
+
 I would like to thank [Carlos Polop](https://github.com/carlospolop), a great pentester and better friend, for making me think about this subject, and for his helpful feedback and interest, oh and the name of the project. I am sure that if you are reading this you have already used his awesome tool [PEASS](https://github.com/carlospolop/PEASS-ng) and found helpful some article in his book [HackTricks](https://book.hacktricks.xyz). Also thank him for helping me with the talk at the [RootedCon 2022](https://rootedcon.com).
 
 ## Now what?
@@ -125,7 +123,7 @@ This technique can be prevented in several ways.
 - Placing `dd` where only root can run it.
 - Using a kernel compiled without support for the `mem` file.
 - Not installing `setarch/linux64` or making anything that prevents the disabling of ASLR (like Docker does, even though their intentions were different).
-- Check if `dd` calls `mprotect()` with `PROT_EXEC`.
+- Check if `dd` calls `mprotect()` with `PROT_EXEC` or `memfd_create()`.
 
 ## Questions? Death threats?
 Feel free to send me an email to [arget@protonmail.ch](mailto:arget@protonmail.ch).
