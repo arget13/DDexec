@@ -122,7 +122,7 @@ I would like to thank [Carlos Polop](https://github.com/carlospolop), a great pe
 ## Now what?
 This technique can be prevented in several ways.
 - Not installing `dd` (maybe even go distroless?).
-- Making `dd` executable only by root.
+- Placing `dd` where only root can run it.
 - Using a kernel compiled without support for the `mem` file.
 - Not installing `setarch/linux64` or making anything that prevents the disabling of ASLR (like Docker does, even though their intentions were different).
 - Check if `dd` calls `mprotect()` with `PROT_EXEC`.

