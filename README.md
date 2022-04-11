@@ -1,6 +1,6 @@
 # DDexec
 ## Context
-In Linux in order to run a program it must exist as a file, it must be accessible in some way through the file system hierarchy (this is just how `execve()` works). This file may reside on disk or in ram (tmpfs, memfd) but you need a filepath. This has made very easy to control what is run on a Linux system, it makes easy to detect threats and attacker's tools or to prevent them from trying to execute anything of theirs at all (_e. g._ not allowing unprivileged users to create executable files anywhere).
+In Linux in order to run a program it must exist as a file, it must be accessible in some way through the file system hierarchy (this is just how `execve()` works). This file may reside on disk or in ram (tmpfs, memfd) but you need a filepath. This has made very easy to control what is run on a Linux system, it makes easy to detect threats and attacker's tools or to prevent them from trying to execute anything of theirs at all (_e. g._ not allowing unprivileged users to place executable files anywhere).
 
 But this technique is here to change all of this. If you can not start the process you want... then you hijack one already existing.
 
@@ -24,28 +24,14 @@ bash ddsc.sh < <(xxd -ps -r <<< "4831c0fec089c7488d3510000000ba0c0000000f054831c
 
 And yes. It works with meterpreter.
 
-Supported shells are bash, zsh and ash.
+Tested Linux distributions are Debian, Alpine and Arch. Supported shells are bash, zsh and ash. Currently **only x86-64** architecture is supported, but you can follow the progress in the [ARM/Aarch64 branch](https://github.com/arget13/DDexec/tree/arm). The shellcode already works on Aarch64, and the rest should be easy.
 
-Currently **only x86-64** architecture is supported, but you can follow the progress in the [ARM/Aarch64 branch](https://github.com/arget13/DDexec/tree/arm). The shellcode already works on Aarch64, the problem is that the creation of a ROP on this architecture is [tricky](https://github.com/arget13/DDexec/issues/7), especially when you have to implement also the gadget search.
 
-Tested Linux distributions are Debian, Alpine and Arch.
-
-### A little trick
-In bash and (surprisingly) ash you may do the following in a shell:
-```
-$ ddexec()
-> {
->    # Paste here the script as is
-> }
-$ base64 -w0 /bin/ls | ddexec /bin/ls -lA
-```
-
-## Dependencies & limitations
+## Dependencies
 This script depends on the following tools to work.
 ```
 dd
 bash | zsh | ash (busybox)
-setarch | linux64 (busybox)
 head
 tail
 cut
@@ -58,11 +44,6 @@ base64
 sleep
 ```
 
-### Limitations
-On the other hand, the default `seccomp` configuration that uses Docker forbids the syscall `personality()`, very much needed by `setarch` to disable ASLR. You can override this behaviour with the option `--security-opt seccomp=unconfined` or using another `seccomp` that allows this syscall, like [this one](https://github.com/ros-infrastructure/buildfarm_deployment/blob/master/modules/agent_files/files/docker-default-seccomp-with-personality.json). The funny thing is that Docker is configured this way to prevent the container from enabling BSD emulation...
-
-Fortunately Kubernetes uses Docker with `seccomp` disabled.
-
 
 ## The technique
 If you are able to modify arbitrarily the memory of a process then you can take over it. This can be used to hijack an already existing process and replace it with another program. We can achieve this either by using the `ptrace()` syscall (which requires you to have the ability to execute syscalls or to have gdb available on the system) or, more interestingly, writing to `/proc/$pid/mem`.
@@ -70,25 +51,25 @@ If you are able to modify arbitrarily the memory of a process then you can take 
 The file `/proc/$pid/mem` is a one-to-one mapping of the entire address space of a process (_e. g._ from `0x0000000000000000` to `0x7ffffffffffff000` in x86-64). This means that reading from or writing to this file at an offset `x` is the same as reading from or modifying the contents at the virtual address `x`.
 
 Now, we have four basic problems to face:
+- In general, only root and the program owner of the file may modify it.
 - ASLR.
 - If we try to read or write to an address not mapped in the address space of the program we will get an I/O error.
-- In general only root and the program owner of the file may modify it.
 
 This problems have solutions that, although they are not perfect, are good:
-- For ASLR we have the `setarch` utility (on busybox distributions it is `linux64`).
+- Most shell interpreters allow the creation of file descriptors that will then be inherited by child processes. We can create a fd pointing to the `mem` file of the sell with write permissions... so child processes that use that fd will be able to modify the shell's memory.
+- ASLR isn't even a problem, we can check the shell's `maps` file or any other from the procfs in order to gain information about the address space of the process.
 - So we need to `lseek()` over the file. From the shell this cannot be done unless using the infamous `dd`.
-- Well, we make `dd` exploit itself. This also has the benefit of allowing us to use `/proc/self` instead of having to find the PID of the targetted program.
 
 ### In more detail
-The steps are relatively easy and do not require any kind of expertise to understand them. Anyone with a basic understanding of exploiting and with some knowledge of the ELF format can follow this.
-* Find base address of the libc and the loader. Since there is no ASLR we do not need a memory leak, so this is very easy. It can be done just by running a program without ASLR and looking at its `/proc/$pid/maps`.
+The steps are relatively easy and do not require any kind of expertise to understand them:
 * Parse the binary we want to run and the loader to find out what mappings they need. Then craft a "shell"code that will perform, broadly speaking, the same steps that the kernel does upon each call to `execve()`:
     * Create said mappings.
     * Read the binaries into them.
     * Set up permissions.
-    * Finally initialize the stack with the arguments for the program and place the auxiliary vector (needed by the loader)
+    * Finally initialize the stack with the arguments for the program and place the auxiliary vector (needed by the loader).
     * Jump into the loader and let it do the rest (load libraries needed by the program).
-* Overwrite a executable page with the shellcode, the `mem` file allows to write to non-writable files...
+* Obtain from the `syscall` file the address to which the process will return after the syscall it is executing.
+* Overwrite that place, which will be executable, with our shellcode (through `mem` we can modify unwritable pages).
 * Pass the program we want to run to the stdin of the process (will be `read()` by said "shell"code).
 * At this point it is up to the loader to load the necessary libraries for our program and jump into it.
 
@@ -98,32 +79,25 @@ Oh, and all of this must be done in s**hell** scripting, or what would be the po
 Well, there are a couple of TODOs. Besides this, you may have noticed that I do not know much about shell scripting (I am more of a C programmer) and I am sure I must have won a decade worth of ["useless use of an echo"](https://porkmail.org/era/unix/award.html) awards and the rest of variants just with a fraction of this project.
 
 - Improve code style and performance.
-- Port to another architecture.
 - Port to other shells.
-- Reduce the amount of dependencies needed, or even detect dynamically if the system has alternatives for a missing one.
 - Allow run the program with a non-empty environment.
-- Take into account that this can be easily adapted to every program that allows seeking through a file.
-
-You may find useful the project's [wiki](https://github.com/arget13/DDexec/wiki) (which I am still writing).
 
 Anyway, **all contribution is welcome**. Feel free to fork and PR.
 
 ## Credit
 Recently I have come to know that [Sektor7](https://www.sektor7.net) had already [published](https://blog.sektor7.net/#!res/2018/pure-in-memory-linux.md) this almost-exact same technique on their blog a few years ago.
 
-Despite this, this technique has been thought and developed by me independently in its entirety. I have also gone much further creating an easy to use implementation and avoiding the `memfd_create() + execve()` technique (which is very noisy). Also, an error committed in their version is to rely on a GOT overwrite, when most of the current compilations of dd are **full RelRO**. Anyway, I hope I will be able to spread the use of this technique much further.
+Despite this, I thought this technique independently in, now almost, its entirety. Probably the smarter piece of this technique is the use of the inherited file descriptor, idea provided by [David Buchanan](https://github.com/DavidBuchanan314) (inspired, I think, by Sektor7's blog) almost a year before I even started thinking about this topic. This alone not only makes the technique much simpler and neat, it also makes it far deadlier by eliminating the need to disable ASLR. His [tweet](https://twitter.com/David3141593/status/1386661837073174532) also made me realize how *stupid* I was for not noticing that `mem` allowed to write to non-writable pages, hence making the ROP unnecessary... This ultimately also has the desired effect of making this significantly easier to port to other ISAs.
 
-I would like to thank [David Buchanan](https://github.com/DavidBuchanan314) because [this tweet](https://twitter.com/David3141593/status/1386661837073174532) made me realize how stupid I was for not noticing that `mem` allowed to write to non-writable pages, hence making the ROP unnecessary. This also has the effect of making a lot more easier to port to another architectures.
+Either way, I hope I will be able to spread this technique much further, which is what matters.
 
-I would like to thank [Carlos Polop](https://github.com/carlospolop), a great pentester and better friend, for making me think about this subject, and for his helpful feedback and interest, oh and the name of the project. I am sure that if you are reading this you have already used his awesome tool [PEASS](https://github.com/carlospolop/PEASS-ng) and found helpful some article in his book [HackTricks](https://book.hacktricks.xyz). Also thank him for helping me with the talk at the [RootedCon 2022](https://rootedcon.com).
+I would like to thank [Carlos Polop](https://github.com/carlospolop), a great pentester and better friend, for making me think about this subject, and for his helpful feedback and interest, oh and the name of the project. I am sure that if you are reading this you have already used his awesome tool [PEASS](https://github.com/carlospolop/PEASS-ng) and found helpful some article in his book [HackTricks](https://book.hacktricks.xyz). I also thank him for helping me with the talk at the [RootedCon 2022](https://rootedcon.com).
 
 ## Now what?
 This technique can be prevented in several ways.
 - Not installing `dd` (maybe even go distroless?).
 - Placing `dd` where only root can run it.
 - Using a kernel compiled without support for the `mem` file.
-- Not installing `setarch/linux64` or making anything that prevents the disabling of ASLR (like Docker does, even though their intentions were different).
-- Check if `dd` calls `mprotect()` with `PROT_EXEC` or `memfd_create()`.
 
 ## Questions? Death threats?
 Feel free to send me an email to [arget@protonmail.ch](mailto:arget@protonmail.ch).

@@ -17,7 +17,6 @@ jobs:
   alpine_x64:
     container:
       image: alpine
-      options: --security-opt seccomp=unconfined
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -27,7 +26,6 @@ jobs:
   debian_x64:
     container:
       image: debian
-      options: --security-opt seccomp=unconfined
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -38,7 +36,6 @@ jobs:
   arch_x64:
     container:
       image: archlinux
-      options: --security-opt seccomp=unconfined
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3

