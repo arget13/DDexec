@@ -136,7 +136,7 @@ shellcode_loader()
     then
         sc=$sc"4d31c04d89c149f7d041ba32000000" # Prepare for the mmap()s
     else
-        sc=$sc"4831c04889c6b00248bf"$(endian $4)"0f05" # open() the file
+        sc=$sc"4831c04889c6b00248bf""__tagtagtagtag__""0f05" # open() the file
         sc=$sc"4989c041ba12000000" # and prepare for the mmap()s
     fi
 
@@ -451,7 +451,9 @@ shell_maps=$(cat /proc/$$/maps)
 shell_base=$(echo "$shell_maps" | grep -w $shell |\
             head -n1 | cut -d'-' -f1)
 # Address of the string with the path to the loader
-interp_addr=$(printf %016x $((interp_off + $((0x$shell_base)))))
+
+# The shellcode will be written into the vDSO
+vdso_addr=$((0x$(echo "$shell_maps" | grep -F "[vdso]" | cut -d'-' -f1)))
 
 ## Payload: Shellcode, needed parts of the binary & stack's initial content
 sc=$(craft_shellcode "$@")
@@ -459,8 +461,11 @@ data=$(echo $sc | cut -d' ' -f2)
 sc=$(echo $sc | cut -d' ' -f1)
 sc_len=$((${#sc} / 2))
 
-# The shellcode will be written into the vDSO
-vdso_addr=$((0x$(echo "$shell_maps" | grep -F "[vdso]" | cut -d'-' -f1)))
+sc=$sc$(echo -n $interp | od -vtx1 | head -n-1 | cut -d' ' -f2- | tr -d ' \n')00
+interp_addr=$(printf %016x $((vdso_addr + sc_len)))
+sc=${sc/__tagtagtagtag__/$(endian $interp_addr)}
+sc_len=$((${#sc} / 2))
+
 # Trampoline to jump to the shellcode
 jmp="48b8"$(endian $(printf %016x $vdso_addr))"ffe0"
 
