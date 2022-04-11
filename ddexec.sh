@@ -371,11 +371,14 @@ craft_shellcode()
     sc=$sc$(echo $loadbinsc | cut -d' ' -f1)
 
     # Where to load the loader
-    local ld_base=0000$(echo "$shell_maps" | grep `readlink -f $interp` |\
-                        head -n1 | cut -d'-' -f1)
-    if [ $((0x$ld_base)) -eq 0 ] # The shell may be static or using musl
+    if [ -n "$interp" ]
     then
-        ld_base="00000000fffff000"
+        local ld_base=0000$(echo "$shell_maps" | grep `readlink -f $interp` |\
+                            head -n1 | cut -d'-' -f1)
+        if [ $((0x$ld_base)) -eq 0 ] # The shell may be static or using musl
+        then
+            ld_base="00000000fffff000"
+        fi
     fi
 
     ### Initial stack structures. Arguments and a rudimentary auxv ###
@@ -386,7 +389,7 @@ craft_shellcode()
     # The shell has the stdin pointing to a pipe, so we make dup2(2, 0)
     sc=${sc}"4831c04889c6b0024889c7b0210f05"
 
-    if [ -n "$(echo -n $bin | search_section bin "" .interp)" ] # Dynamic binary
+    if [ -n "$interp" ] # Dynamic binary
     then
         # Load the loader (wait... a-are we the kernel now?)
         local loadldsc=$(shellcode_loader file $interp $ld_base $interp_addr)
@@ -421,12 +424,27 @@ then
     setopt KSH_ARRAYS
 fi
 
-# Interpreter (loader)?
-interp_off=$(search_section file $shell .interp)
-interp_size=$(echo $interp_off | cut -d' ' -f2)
-interp_off=$(echo $interp_off | cut -d' ' -f1)
-interp=$(tail -c +$(($interp_off + 1)) $shell | head -c $((interp_size - 1)))
-if [ $USE_INTERP -eq 1 ]; then interp_=$interp; else interp_=""; fi
+# Interpreter (loader) for the binary
+interp_off=$(echo -n $bin | search_section bin "" .interp)
+if [ -n "$interp_off" ]
+then
+    interp_size=$(echo "$interp_off" | cut -d' ' -f2)
+    interp_off=$(echo "$interp_off" | cut -d' ' -f1)
+    interp=$(echo $bin | base64 -d | tail -c +$(($interp_off + 1)) |\
+             head -c $((interp_size - 1)))
+fi
+# Interpreter (loader) for dd
+if [ $USE_INTERP -eq 1 ]
+then
+    interp_off=$(search_section file $filename .interp)
+    if [ -n "interp_off" ]
+    then
+        interp_size=$(echo $interp_off | cut -d' ' -f2)
+        interp_off=$(echo $interp_off | cut -d' ' -f1)
+        interp_=$(tail -c +$(($interp_off + 1)) $filename |\
+                  head -c $((interp_size - 1)))
+    fi
+fi
 
 # Shell's mappings
 shell_maps=$(cat /proc/$$/maps)

@@ -41,9 +41,7 @@ readlink
 wc
 tr
 base64
-sleep
 ```
-
 
 ## The technique
 If you are able to modify arbitrarily the memory of a process then you can take over it. This can be used to hijack an already existing process and replace it with another program. We can achieve this either by using the `ptrace()` syscall (which requires you to have the ability to execute syscalls or to have gdb available on the system) or, more interestingly, writing to `/proc/$pid/mem`.
