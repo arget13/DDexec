@@ -414,6 +414,7 @@ craft_stack()
 
     # Reuse canary and PTR_MANGLE key, place them in AT_RANDOM field of the auxv
     sc=$sc
+    sc=$sc$(eval echo $(sc_chunk canary))
 
     echo -n $stack $sc
 }
@@ -473,7 +474,7 @@ craft_payload2()
     if [ $DEBUG -eq 1 ]; then sc=$(eval echo $(sc_chunk loop))$sc; fi
 
     local sc_len=$(printf "%016x" $((${#sc} / 2)))
-    echo -n $sc_len $sc$writebin$stack $interp
+    echo -n $sc_len $sc$writebin$stack
 }
 
 read_text()
@@ -622,7 +623,6 @@ dd_base=0000$(echo "$dd_maps" | grep -w $(readlink -f $filename) |\
 ## 2nd payload: Shellcode, needed parts of the binary & stack's initial content
 payload2=$(craft_payload2 "$@")
 sc_len=$(echo $payload2 | cut -d' ' -f1)
-interp=$(echo $payload2 | cut -d' ' -f3)
 payload2=$(echo $payload2 | cut -d' ' -f2)
 
 # Find path to the libc
