@@ -89,8 +89,19 @@ else
     sc=$(od -v -t x1 | head -n-1 | cut -d' ' -f2- | tr -d ' \n')
 fi
 
+arch=$(uname -m)
+
 # dup2(2, 0);
-sc="4831c04889c6b0024889c7b0210f05"$sc
+if [ "$arch" = "x86_64" ]
+then
+    sc="4831c04889c6b0024889c7b0210f05"$sc
+elif [ "$arch" = "aarch64" ]
+then
+    sc="080380d2400080d2010080d2010000d4"$sc
+else
+    echo "DDexec: Error, this architecture is not supported." >&2
+    exit
+fi
 sc_len=$(printf %016x $((${#sc} / 2)))
 
 shell=$(readlink -f /proc/$$/exe)
@@ -117,7 +128,13 @@ fi
 # The shellcode will be written into the vDSO
 vdso_addr=$((0x$(grep -F "[vdso]" /proc/$$/maps | cut -d'-' -f1)))
 # Trampoline to jump to the shellcode
-jmp="48b8"$(endian $(printf %016x $vdso_addr))"ffe0"
+if [ "$arch" = "x86_64" ]
+then
+    jmp="48b8"$(endian $(printf %016x $vdso_addr))"ffe0"
+elif [ "$arch" = "aarch64" ]
+then
+    jmp=$(load_imm 0 $(printf %016x $vdso_addr))"00001fd6"
+fi
 
 sc=$(printf $sc | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
 jmp=$(printf $jmp | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')

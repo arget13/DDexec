@@ -24,7 +24,7 @@ bash ddsc.sh < <(xxd -ps -r <<< "4831c0fec089c7488d3510000000ba0c0000000f054831c
 
 And yes. It works with meterpreter.
 
-Tested Linux distributions are Debian, Alpine and Arch. Supported shells are bash, zsh and ash. Currently **only x86-64** architecture is supported, but you can follow the progress in the [ARM/Aarch64 branch](https://github.com/arget13/DDexec/tree/arm). The shellcode already works on Aarch64, and the rest should be easy.
+Tested Linux distributions are Debian, Alpine and Arch. Supported shells are bash, zsh and ash over x86_64 and aarch64 (arm64) architectures.
 
 
 ## Dependencies
