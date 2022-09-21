@@ -15,7 +15,35 @@ endian()
 {
     echo -n ${1:14:2}${1:12:2}${1:10:2}${1:8:2}${1:6:2}${1:4:2}${1:2:2}${1:0:2}
 }
-
+# load_imm $regnum $addr
+load_imm()
+{
+    # A crash course on Aarch64 instruction encoding:
+    # 1 10 100101 S[22:21] I[20:5] Rd[4:0] = movz Rd, #I, lsl #(S * 16)
+    # 1 11 100101 S[22:21] I[20:5] Rd[4:0] = movk Rd, #I, lsl #(S * 16)
+    local opcode=0
+    # movz Rd, #(I & 0xffff)
+    opcode=$((0xd2800000 | $1 | ((0x$2 & 0xffff) << 5)))
+    endian $(printf "%08x" "$opcode")
+    if [ $((0x$2)) -gt $((0xffff)) ]
+    then
+        # movk Rd, #((I >> 16) & 0xffff), lsl #16
+        opcode=$((0xf2a00000 | $1 | (((0x$2 >> 16) & 0xffff) << 5)))
+        endian $(printf "%08x" "$opcode")
+        if [ $((0x$2)) -gt $((0xffffffff)) ]
+        then
+            # movk Rd, #((I >> 32) & 0xffff), lsl #32
+            opcode=$((0xf2c00000 | $1 | (((0x$2 >> 32) & 0xffff) << 5)))
+            endian $(printf "%08x" "$opcode")
+            if [ $((0x$2)) -gt $((0xffffffffffff)) ]
+            then
+                # movk Rd, #((I >> 48) & 0xffff), lsl #48
+                opcode=$((0xf2e00000 | $1 | (((0x$2 >> 48) & 0xffff) << 5)))
+                endian $(printf "%08x" "$opcode")
+            fi
+        fi
+    fi
+}
 # search_section $filename $section
 search_section()
 {
