@@ -80,6 +80,8 @@ else
 fi
 echo
 
+if [ "$1" = "noash" ]; then exit $status; fi
+
 time r="$(base64 -w0 `which echo` |\
      ash ddexec.sh echo -n asd qwerty "" zxcvb " fdsa gf")"
 if [ "$r" = "$(echo -n asd qwerty "" zxcvb " fdsa gf")" ]
