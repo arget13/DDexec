@@ -137,6 +137,7 @@ search_section()
     done
 }
 
+### TODO: SHF_COMPRESSED sections ###
 # shellcode_loader "bin"
 # shellcode_loader "file" $filename $base $pathaddr
 shellcode_loader()
@@ -162,9 +163,19 @@ shellcode_loader()
                       cut -d' ' -f2- | tr -d ' \n')
     fi
 
-    local entry=$((0x$(endian ${header:48:16})))
-
     local base=0
+    local entry=$((0x$(endian ${header:48:16})))
+    if [ ${header:32:4} = "0300" ] # PIE binaries (e_type == ET_DYN)
+    then
+        if [ $1 = "bin" ]
+        then
+            base=$((0x400000))
+        else
+            base=$((0x$3))
+        fi
+        entry=$((entry + base))
+    fi
+
     local writebin=""
     local sc=""
     if [ $1 = "bin" ]
@@ -194,28 +205,15 @@ shellcode_loader()
             fi
             continue
         fi
+
         if [ $phenttype != "01000000" ]; then continue; fi # type != LOAD
         local offset=$(endian ${phent:16:16})
         local virt=$(endian ${phent:32:16})
         local fsize=$(endian ${phent:64:16})
         local memsz=$(endian ${phent:80:16})
 
-        if [ $((0x$offset)) -eq 0 ]
-        then
-            if [ $((0x$virt)) -lt $((0x400000)) ] # PIE binaries
-            then
-                if [ $1 = "bin" ]
-                then
-                    base=$((0x400000))
-                else
-                    base=$((0x$3))
-                fi
-                entry=$((entry + base))
-            fi
-        fi
         virt=$(printf %016x $((0x$virt + base)))
-
-        local finalvirt=$((((0x$virt + 0x$memsz) & (~0xfff)) + 0x1000))
+        local finalvirt=$(((0x$virt + 0x$memsz + 0xfff) & (~0xfff)))
 
         local origvirt=$virt
         virt=$((0x$virt & (~0xfff))) # The mapping must be aligned
@@ -244,9 +242,9 @@ shellcode_loader()
             off=$(printf %016x $off)
 
             local sc2=""
-            local filelen=$((($(wc -c < $2) & (~0xfff)) + 0x1000))
+            local filelen=$((($(wc -c < $2) + 0xfff) & (~0xfff)))
             # If the mapping exceeds the file, split it into two
-            # (some Linux distros, like Alpine, don't like it)
+            # (some Linux distros, like Alpine, don't like it otherwise)
             if [ $((0x$off + 0x$memsz)) -gt $filelen ]
             then
                 local diff=$((0x$off + 0x$memsz - $filelen))
@@ -263,9 +261,10 @@ shellcode_loader()
             sc=$sc$sc2
         fi
 
-        if [ $((0x$offset)) -eq 0 ]
+        if [ $((0x$offset)) -le $phoff ] &&
+           [ $phoff -lt $((0x$offset + 0x$fsize)) ]
         then
-            phaddr=$((phoff + 0x$origvirt))
+            phaddr=$((phoff - 0x$offset + 0x$origvirt))
         fi
     done
     entry=$(endian $(printf %016x $entry))
@@ -283,7 +282,7 @@ shellcode_loader()
     then
         bss_addr=$((bss_addr + base))
         # Zero until the end of page
-        local bss_size=$((((bss_addr + 0x1000) & (~0xfff)) - bss_addr))
+        local bss_size=$((((bss_addr + 0xfff) & (~0xfff)) - bss_addr))
         bss_addr=$(printf %016x $bss_addr)
         bss_size=$(printf %08x $((bss_size >> 3)))
         sc=$sc$(eval echo $(sc_chunk zerobss))
