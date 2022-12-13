@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Prepend the shellcode with an infinite loop (so I can attach to it with gdb)
+# Prepend the shellcode with an infinite loop (so you can attach to it with gdb)
 # Then in gdb just use `set $pc+=2' and you will be able to `si'.
 # In ARM64 use `set $pc+=4'.
 if [ -z "$DEBUG" ]; then DEBUG=0; fi
@@ -531,7 +531,7 @@ then
     jmp="48b8"$(endian $(printf %016x $vdso_addr))"ffe0"
 elif [ "$arch" = "aarch64" ]
 then
-    jmp=$(load_imm 0 $(printf %016x $vdso_addr))"00001fd6"
+    jmp="4000005800001fd6"$(endian $(printf %016x $vdso_addr))
 fi
 
 sc=$(printf $sc | sed 's/../\\x&/g')
@@ -577,4 +577,4 @@ exec 3>/proc/self/mem
 seeker_args=${SEEKER_ARGS/'$offset'/$addr}
 seeker_args="$(eval echo -n \"$seeker_args\")"
 $interp_ $seeker $seeker_args <&3 >/dev/null 2>&1
-printf $jmp >&3 # The shell doesn't know this command is gonna kill it
+printf $jmp >&3
