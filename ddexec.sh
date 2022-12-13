@@ -285,7 +285,7 @@ shellcode_loader()
     then
         bss_addr=$((bss_addr + base))
         # Zero until the end of page
-        local bss_size=$((((bss_addr + 0xfff) & (~0xfff)) - bss_addr))
+        local bss_size=$((finalvirt - bss_addr))
         bss_addr=$(printf %016x $bss_addr)
         bss_size=$(printf %08x $((bss_size >> 3)))
         sc=$sc$(eval echo $(sc_chunk zerobss))
@@ -534,9 +534,9 @@ then
     jmp=$(load_imm 0 $(printf %016x $vdso_addr))"00001fd6"
 fi
 
-sc=$(printf $sc | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
-data=$(printf $data | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
-jmp=$(printf $jmp | sed 's/\([0-9A-F]\{2\}\)/\\x\1/gI')
+sc=$(printf $sc | sed 's/../\\x&/g')
+data=$(printf $data | sed 's/../\\x&/g')
+jmp=$(printf $jmp | sed 's/../\\x&/g')
 
 read syscall_info < /proc/self/syscall
 addr=$(($(echo $syscall_info | cut -d' ' -f9)))
@@ -573,7 +573,7 @@ printf $sc >&3
 exec 3>&-
 exec 3>/proc/self/mem
 
-# Write jump instruction somewhere it will be found shortly
+# Write jump instruction where it will be found shortly
 seeker_args=${SEEKER_ARGS/'$offset'/$addr}
 seeker_args="$(eval echo -n \"$seeker_args\")"
 $interp_ $seeker $seeker_args <&3 >/dev/null 2>&1
