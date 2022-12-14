@@ -12,6 +12,11 @@ if [ -z "$USE_INTERP" ]; then USE_INTERP=0; fi
 # Currently tail is the default binary used to lseek() through the mem file.
 if [ -z "$SEEKER" ]; then seeker=tail; else seeker="$SEEKER"; fi
 seeker=$(command -v "$seeker") # Harry Potter vibes? Nah.
+realname=$(basename $(readlink -f $seeker))
+if [ -z ${realname##*box*} ] # Busybox / Toybox
+then
+    seeker=$(command -v "dd")
+fi
 
 # Endian conversion
 endian()
