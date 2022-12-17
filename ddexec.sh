@@ -28,36 +28,6 @@ sc_chunk()
 {
     echo "$sc_array" | grep -w $1 | cut -f2
 }
-# Load the aarch64 register with number $regnum with the value $addr
-# load_imm $regnum $addr
-load_imm()
-{
-    # A crash course on Aarch64 instruction encoding:
-    # 1 10 100101 S[22:21] I[20:5] Rd[4:0] = movz Rd, #I, lsl #(S * 16)
-    # 1 11 100101 S[22:21] I[20:5] Rd[4:0] = movk Rd, #I, lsl #(S * 16)
-    local opcode=0
-    # movz Rd, #(I & 0xffff)
-    opcode=$((0xd2800000 | $1 | ((0x$2 & 0xffff) << 5)))
-    endian $(printf "%08x" "$opcode")
-    if [ $((0x$2)) -gt $((0xffff)) ]
-    then
-        # movk Rd, #((I >> 16) & 0xffff), lsl #16
-        opcode=$((0xf2a00000 | $1 | (((0x$2 >> 16) & 0xffff) << 5)))
-        endian $(printf "%08x" "$opcode")
-        if [ $((0x$2)) -gt $((0xffffffff)) ]
-        then
-            # movk Rd, #((I >> 32) & 0xffff), lsl #32
-            opcode=$((0xf2c00000 | $1 | (((0x$2 >> 32) & 0xffff) << 5)))
-            endian $(printf "%08x" "$opcode")
-            if [ $((0x$2)) -gt $((0xffffffffffff)) ]
-            then
-                # movk Rd, #((I >> 48) & 0xffff), lsl #48
-                opcode=$((0xf2e00000 | $1 | (((0x$2 >> 48) & 0xffff) << 5)))
-                endian $(printf "%08x" "$opcode")
-            fi
-        fi
-    fi
-}
 
 # search_section "file" $filename $section
 # search_section "bin" "" $section (and the binary through stdin)
@@ -443,21 +413,22 @@ jmpbin	48b8$entry
 jmp	ffe0
 loop	ebfe
 '
+# echo -n $(printf "%02x" $((64 | $1)))00005803000014$(endian $2)
 elif [ "$arch" = "aarch64" ]
 then
     sc_array='prep	430680d204008092a50005ca
 openprep	080780d2600c8092420002ca________________010000d4e40300aa430280d2
-stackexe	481c80d2$(load_imm 0 $stack_bottom)$(load_imm 1 $stack_size)$(load_imm 2 00000007)010000d4
-mrmbin	c81b80d2$(load_imm 0 $virt)$(load_imm 1 $memsz)$(load_imm 2 00000003)010000d4e80780d2$(load_imm 1 $origvirt)$(load_imm 2 $fsize)000000ca010000d4420000cb2100008b5f0000f161ffff54481c80d2$(load_imm 0 $virt)$(load_imm 1 $memsz)$(load_imm 2 $perm)010000d4
-mrmfile2	f30304aa04008092a50005ca430680d2c81b80d2$(load_imm 0 $virt2)$(load_imm 1 $diff)$(load_imm 2 $perm)010000d4e40313aa
-mrmfile	c81b80d2$(load_imm 0 $virt)$(load_imm 1 $memsz)$(load_imm 2 $perm)$(load_imm 5 $off)010000d4
+stackexe	481c80d24000005803000014$(endian $stack_bottom)4100005803000014$(endian 00000000$stack_size)4200005803000014$(endian 0000000000000007)010000d4
+mrmbin	c81b80d24000005803000014$(endian $virt)4100005803000014$(endian 00000000$memsz)4200005803000014$(endian 0000000000000003)010000d4e80780d24100005803000014$(endian $origvirt)4200005803000014$(endian $fsize)000000ca010000d4420000cb2100008b5f0000f161ffff54481c80d24000005803000014$(endian $virt)4100005803000014$(endian 00000000$memsz)4200005803000014$(endian 00000000$perm)010000d4
+mrmfile2	f30304aa04008092a50005ca430680d2c81b80d24000005803000014$(endian $virt2)4100005803000014$(endian 00000000$diff)4200005803000014$(endian 00000000$perm)010000d4e40313aa
+mrmfile	c81b80d24000005803000014$(endian $virt)4100005803000014$(endian 00000000$memsz)4200005803000014$(endian 00000000$perm)4500005803000014$(endian $off)010000d4
 close	280780d2e00304aa010000d4
-zerobss	$(load_imm 0 $bss_addr)$(load_imm 1 $bss_size)1f8400f8210400d13f0000f1a1ffff54
-stack	$(load_imm 0 $sp)1f000091$(load_imm 2 $stack_len)e80780d2e1030091000000ca010000d4420000cb2100008b5f0000f161ffff54
+zerobss	4000005803000014$(endian $bss_addr)4100005803000014$(endian 00000000$bss_size)1f8400f8210400d13f0000f1a1ffff54
+stack	4000005803000014$(endian $sp)1f0000914200005803000014$(endian 00000000$stack_len)e80780d2e1030091000000ca010000d4420000cb2100008b5f0000f161ffff54
 canary	
 dup	080380d2400080d2010080d2010000d4
-jmpld	$(load_imm 0 $ld_start_addr)
-jmpbin	$(load_imm 0 $(endian $entry))
+jmpld	4000005803000014$(endian $ld_start_addr)
+jmpbin	4000005803000014$entry
 jmp	00001fd6
 loop	00000014
 '
