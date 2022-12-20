@@ -317,7 +317,10 @@ craft_stack()
     auxv=$auxv"0300000000000000"$1                 # phaddr
     auxv=$auxv"0400000000000000"$2                 # phentsize
     auxv=$auxv"0500000000000000"$3                 # phnum
-    auxv=$auxv"0700000000000000"$(endian $4)       # ld_base
+    if [ -n "$4" ]
+    then
+        auxv=$auxv"0700000000000000"$(endian $4)       # ld_base
+    fi
     auxv=$auxv"0900000000000000"$5                 # entry
     auxv=$auxv"1900000000000000"$at_random         # AT_RANDOM
     auxv=$auxv"0600000000000000""0010000000000000" # AT_PAGESZ
@@ -363,7 +366,7 @@ craft_shellcode()
     fi
 
     ### Initial stack structures. Arguments and a rudimentary auxv ###
-    local stack=$(craft_stack $phaddr $phentsize $phnum $ld_base $entry "$@")
+    local stack=$(craft_stack $phaddr $phentsize $phnum "$ld_base" $entry "$@")
     sc=$sc$(echo $stack | cut -d' ' -f2)
     stack=$(echo $stack | cut -d' ' -f1)
 
