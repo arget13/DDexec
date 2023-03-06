@@ -297,15 +297,17 @@ craft_stack()
     # argv[argc] = NULL; envp[0] = NULL;
     stack=$stack"00000000000000000000000000000000"
 
-    for i in $(seq $((argv0_addr - (argv0_addr & (~7)))))
-    do
-        args="00"$args
-    done
+    if [ -n "$args" ]
+    then
+        for i in $(seq $((argv0_addr - (argv0_addr & (~7)))))
+        do
+            args="00"$args
+        done
+    fi
 
     local at_random=$(((argv0_addr & (~7)) - 16))
-    local auxv_len=$((8 * 2 * 8))
     # Keep the stack aligned (following orders from System V)
-    if [ $((((${#stack} + ${#args} + $auxv_len) / 2) & 0xf)) -eq 0 ]
+    if [ $((((${#stack} + ${#args}) / 2) & 0xf)) -eq 0 ]
     then
         args="0000000000000000"$args
         at_random=$((at_random - 8))
@@ -416,7 +418,6 @@ jmpbin	48b8$entry
 jmp	ffe0
 loop	ebfe
 '
-# echo -n $(printf "%02x" $((64 | $1)))00005803000014$(endian $2)
 elif [ "$arch" = "aarch64" ]
 then
     sc_array='prep	430680d204008092a50005ca
@@ -513,6 +514,7 @@ then
     jmp="4000005800001fd6"$(endian $(printf %016x $vdso_addr))
 fi
 
+# echo $sc $data
 sc=$(printf $sc | sed 's/../\\x&/g')
 data=$(printf $data | sed 's/../\\x&/g')
 jmp=$(printf $jmp | sed 's/../\\x&/g')
