@@ -475,7 +475,7 @@ ddexec()
     if [ $USE_INTERP -eq 1 ]
     then
         interp_off=$(search_section file $seeker .interp)
-        if [ -n "interp_off" ]
+        if [ -n "$interp_off" ]
         then
             interp_size=$(echo $interp_off | cut -d' ' -f2)
             interp_off=$(echo $interp_off | cut -d' ' -f1)
