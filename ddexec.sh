@@ -1,80 +1,134 @@
 #!/bin/sh
 
-# Prepend the shellcode with an infinite loop (so you can attach to it with gdb)
-# Then in gdb just use `set $pc+=2' and you will be able to `si'.
-# In ARM64 use `set $pc+=4'.
-: "${DEBUG:=0}"
+init_global(){
+    : 'Init global variables
+      Called once by main
+    '
+    # Prepend the shellcode with an infinite loop (so you can attach to it with gdb)
+    # Then in gdb just use `set $pc+=2' and you will be able to `si'.
+    # In ARM64 use `set $pc+=4'.
+    : "${DEBUG:=0}"
 
-# If the seeker binary is not executable by your user, you may try to run it
-# through the loader (typically ld.so).
-: "${USE_INTERP:=0}"
+    # If the seeker binary is not executable by your user, you may try to run it
+    # through the loader (typically ld.so).
+    : "${USE_INTERP:=0}"
 
-# Currently tail is the default binary used to lseek() through the mem file.
-: "${SEEKER:=tail}"
+    # Currently tail is the default binary used to lseek() through the mem file.
+    : "${SEEKER:=tail}"
 
-# Endian conversion
-endian()
-{
-    echo -n ${1:14:2}${1:12:2}${1:10:2}${1:8:2}${1:6:2}${1:4:2}${1:2:2}${1:0:2}
+    # CPU Architecture to discrimite ending and register size
+    ARCH=$(uname -m)
+
+    if [ "$ARCH" = x86_64 ]
+    then
+        SC_ARRAY='
+            prep	4d31c04d89c149f7d041ba32000000
+            openprep	4831c04889c6b00248bf________________0f054989c041ba12000000
+            stackexe	4831c0b00a48bf$(endian $stack_bottom)be$(endian $stack_size)ba070000000f05
+            mrmbin	4831c0b00948bf$(endian $virt)be$(endian $memsz)ba030000000f054831ff48be$(endian $origvirt)48ba$(endian $fsize)4889f80f054829c24801c64885d275f04831c0b00a48bf$(endian $virt)be$(endian $memsz)ba$(endian $perm)0f05
+            mrmfile2	4d89c44d31c04d89c149f7d041ba320000004831c0b00948bf$(endian $virt2)be$(endian $diff)ba$(endian $perm)0f054d89e0
+            mrmfile	4831c0b00948bf$(endian $virt)be$(endian $memsz)ba$(endian $perm)49b9$(endian $off)0f05
+            close	4831c0b0034c89c70f05
+            zerobss	4831c0b9$(endian $bss_size)48bf$(endian $bss_addr)f348ab
+            stack	48bc$(endian $sp)4831ff4889e6ba$(endian $stack_len)4889f80f0529c24801c685d275f3
+            canary	48bb${at_random}64488b04252800000048890380c30864488b042530000000488903
+            dup	4831c04889c6b0024889c7b0210f05
+            jmpld	48b8$(endian $ld_start_addr)
+            jmpbin	48b8$entry
+            jmp	ffe0
+            loop	ebfe
+        '
+    elif [ "$ARCH" = aarch64 ]
+    then
+        SC_ARRAY='
+            prep	430680d204008092a50005ca
+            openprep	080780d2600c8092420002ca________________010000d4e40300aa430280d2
+            stackexe	481c80d24000005803000014$(endian $stack_bottom)4100005803000014$(endian 00000000$stack_size)4200005803000014$(endian 0000000000000007)010000d4
+            mrmbin	c81b80d24000005803000014$(endian $virt)4100005803000014$(endian 00000000$memsz)4200005803000014$(endian 0000000000000003)010000d4e80780d24100005803000014$(endian $origvirt)4200005803000014$(endian $fsize)000000ca010000d4420000cb2100008b5f0000f161ffff54481c80d24000005803000014$(endian $virt)4100005803000014$(endian 00000000$memsz)4200005803000014$(endian 00000000$perm)010000d4
+            mrmfile2	f30304aa04008092a50005ca430680d2c81b80d24000005803000014$(endian $virt2)4100005803000014$(endian 00000000$diff)4200005803000014$(endian 00000000$perm)010000d4e40313aa
+            mrmfile	c81b80d24000005803000014$(endian $virt)4100005803000014$(endian 00000000$memsz)4200005803000014$(endian 00000000$perm)4500005803000014$(endian $off)010000d4
+            close	280780d2e00304aa010000d4
+            zerobss	4000005803000014$(endian $bss_addr)4100005803000014$(endian 00000000$bss_size)1f8400f8210400d13f0000f1a1ffff54
+            stack	4000005803000014$(endian $sp)1f0000914200005803000014$(endian 00000000$stack_len)e80780d2e1030091000000ca010000d4420000cb2100008b5f0000f161ffff54
+            canary	
+            dup	080380d2400080d2010080d2010000d4
+            jmpld	4000005803000014$(endian $ld_start_addr)
+            jmpbin	4000005803000014$entry
+            jmp	00001fd6
+            loop	00000014
+        '
+    else
+        echo "DDexec: Error, this architecture is not supported." >&2
+        exit 1
+    fi
 }
 
-sc_chunk()
-{
-    echo "$sc_array" | grep -w $1 | cut -f2
+
+endian(){
+    : 'Helper: Endian conversion'
+    echo -n "${1:14:2}${1:12:2}${1:10:2}${1:8:2}${1:6:2}${1:4:2}${1:2:2}${1:0:2}"
 }
 
-# search_section "file" $filename $section
-# search_section "bin" "" $section (and the binary through stdin)
-search_section()
-{
+
+sc_chunk(){
+    : 'Exctract a chunk from the global SC_ARRAY'
+    echo "$SC_ARRAY" | grep -w "$1" | cut -f2
+}
+
+
+search_section(){
+    : 'Search for a section segment in file
+      Ex: search_section file $filename $section
+      Ex: search_section bin "" $section (and the binary through stdin)
+    '
     local data=""
-    if [ $1 = "file" ]
+    if [ file = "$1" ]
     then
         local header=$(od -v -t x1 -N 64 $2 | head -n -1 |\
                        cut -d' ' -f 2- | tr -d ' \n')
     else
         read -r data
-        local header=$(echo -n $data | base64 -d | od -v -t x1 -N 64 |\
+        local header=$(echo -n "$data" | base64 -d | od -v -t x1 -N 64 |\
                        head -n -1 | cut -d' ' -f 2- | tr -d ' \n')
     fi
     # I'm not commenting this, RTFM.
     local shoff=${header:80:16}
-    shoff=$(endian $shoff)
+    shoff=$(endian "$shoff")
     shoff=$((0x$shoff))
     local shentsize=${header:116:4}
-    shentsize=$(endian $shentsize)
+    shentsize=$(endian "$shentsize")
     shentsize=$((0x$shentsize))
     local shentnum=${header:120:4}
-    shentnum=$(endian $shentnum)
+    shentnum=$(endian "$shentnum")
     shentnum=$((0x$shentnum))
     local shsize=$((shentnum * shentsize))
     local shstrndx=${header:124:4}
-    shstrndx=$(endian $shstrndx)
+    shstrndx=$(endian "$shstrndx")
     shstrndx=$((0x$shstrndx))
-    if [ $1 = "file" ]
+    if [ "$1" = file ]
     then
-        sections=$(od -v -t x1 -N $shsize -j $shoff $2 | head -n-1 |\
+        sections=$(od -v -t x1 -N "$shsize" -j "$shoff" "$2" | head -n-1 |\
             cut -d' ' -f2- | tr -d ' \n')
     else
-        sections=$(echo -n $data | base64 -d | od -v -t x1 -N $shsize -j \
-                   $shoff | head -n-1 | cut -d' ' -f2- | tr -d ' \n')
+        sections=$(echo -n "$data" | base64 -d | od -v -t x1 -N "$shsize" -j \
+                   "$shoff" | head -n-1 | cut -d' ' -f2- | tr -d ' \n')
     fi
 
     local shstrtab_off=$((((shstrndx * shentsize) + 24) * 2))
     shstrtab_off=${sections:$shstrtab_off:16}
-    shstrtab_off=$(endian $shstrtab_off)
+    shstrtab_off=$(endian "$shstrtab_off")
     shstrtab_off=$((0x$shstrtab_off))
     local shstrtab_size=$((((shstrndx * shentsize) + 32) * 2))
     shstrtab_size=${sections:$shstrtab_size:16}
-    shstrtab_size=$(endian $shstrtab_size)
+    shstrtab_size=$(endian "$shstrtab_size")
     shstrtab_size=$((0x$shstrtab_size))
-    if [ $1 = "file" ]
+    if [ file = "$1" ]
     then
-        local strtab=$(od -v -t x1 -N $shstrtab_size -j $shstrtab_off $2 |\
+        local strtab=$(od -v -t x1 -N "$shstrtab_size" -j "$shstrtab_off" "$2" |\
                        head -n-1 | cut -d' ' -f2- | tr -d ' \n')
     else
-        local strtab=$(echo -n $data | base64 -d | od -v -t x1 -N \
-                       $shstrtab_size -j $shstrtab_off | head -n-1 |\
+        local strtab=$(echo -n "$data" | base64 -d | od -v -t x1 -N \
+                       "$shstrtab_size" -j "$shstrtab_off" | head -n-1 |\
                        cut -d' ' -f2- | tr -d ' \n')
     fi
 
@@ -109,11 +163,11 @@ search_section()
     done
 }
 
-### TODO: SHF_COMPRESSED sections ###
-# shellcode_loader "bin"
-# shellcode_loader "file" $filename $base $pathaddr
-shellcode_loader()
-{
+shellcode_loader(){
+    : '### TODO: SHF_COMPRESSED sections ###
+      Ex: shellcode_loader "bin"
+      Ex: shellcode_loader "file" $filename $base $pathaddr
+    '
     if [ $1 = "bin" ]
     then
         local header=$(echo $bin | base64 -d | od -t x1 -N 64 | head -n-1 |\
@@ -266,9 +320,11 @@ shellcode_loader()
 
     echo -n "$sc $writebin $phnum $phentsize $phaddr $entry"
 }
-# craft_stack $phaddr $phentsize $phnum $ld_base $entry $argv0 .. $argvn
-craft_stack()
-{
+
+craft_stack(){
+    : 'Craft initial stack
+      Ex: craft_stack $phaddr $phentsize $phnum $ld_base $entry $argv0 .. $argvn
+    '
     local stack_top=$(echo "$shell_maps" | grep -F "[stack]" |\
                       cut -d' ' -f1 | cut -d'-' -f2)
     # Calculate position of argv[0]
@@ -338,8 +394,10 @@ craft_stack()
 
     echo -n $stack $sc
 }
-craft_shellcode()
-{
+
+
+craft_shellcode(){
+    : 'Craft the shellcode to bootload user binary'
     local sc=""
     # Load binary
     local loadbinsc=$(shellcode_loader bin)
@@ -394,49 +452,9 @@ craft_shellcode()
 }
 
 
-ddexec()
-{
-    arch=$(uname -m)
-    if [ "$arch" = "x86_64" ]
-    then
-        sc_array='prep	4d31c04d89c149f7d041ba32000000
-    openprep	4831c04889c6b00248bf________________0f054989c041ba12000000
-    stackexe	4831c0b00a48bf$(endian $stack_bottom)be$(endian $stack_size)ba070000000f05
-    mrmbin	4831c0b00948bf$(endian $virt)be$(endian $memsz)ba030000000f054831ff48be$(endian $origvirt)48ba$(endian $fsize)4889f80f054829c24801c64885d275f04831c0b00a48bf$(endian $virt)be$(endian $memsz)ba$(endian $perm)0f05
-    mrmfile2	4d89c44d31c04d89c149f7d041ba320000004831c0b00948bf$(endian $virt2)be$(endian $diff)ba$(endian $perm)0f054d89e0
-    mrmfile	4831c0b00948bf$(endian $virt)be$(endian $memsz)ba$(endian $perm)49b9$(endian $off)0f05
-    close	4831c0b0034c89c70f05
-    zerobss	4831c0b9$(endian $bss_size)48bf$(endian $bss_addr)f348ab
-    stack	48bc$(endian $sp)4831ff4889e6ba$(endian $stack_len)4889f80f0529c24801c685d275f3
-    canary	48bb${at_random}64488b04252800000048890380c30864488b042530000000488903
-    dup	4831c04889c6b0024889c7b0210f05
-    jmpld	48b8$(endian $ld_start_addr)
-    jmpbin	48b8$entry
-    jmp	ffe0
-    loop	ebfe
-    '
-    elif [ "$arch" = "aarch64" ]
-    then
-        sc_array='prep	430680d204008092a50005ca
-    openprep	080780d2600c8092420002ca________________010000d4e40300aa430280d2
-    stackexe	481c80d24000005803000014$(endian $stack_bottom)4100005803000014$(endian 00000000$stack_size)4200005803000014$(endian 0000000000000007)010000d4
-    mrmbin	c81b80d24000005803000014$(endian $virt)4100005803000014$(endian 00000000$memsz)4200005803000014$(endian 0000000000000003)010000d4e80780d24100005803000014$(endian $origvirt)4200005803000014$(endian $fsize)000000ca010000d4420000cb2100008b5f0000f161ffff54481c80d24000005803000014$(endian $virt)4100005803000014$(endian 00000000$memsz)4200005803000014$(endian 00000000$perm)010000d4
-    mrmfile2	f30304aa04008092a50005ca430680d2c81b80d24000005803000014$(endian $virt2)4100005803000014$(endian 00000000$diff)4200005803000014$(endian 00000000$perm)010000d4e40313aa
-    mrmfile	c81b80d24000005803000014$(endian $virt)4100005803000014$(endian 00000000$memsz)4200005803000014$(endian 00000000$perm)4500005803000014$(endian $off)010000d4
-    close	280780d2e00304aa010000d4
-    zerobss	4000005803000014$(endian $bss_addr)4100005803000014$(endian 00000000$bss_size)1f8400f8210400d13f0000f1a1ffff54
-    stack	4000005803000014$(endian $sp)1f0000914200005803000014$(endian 00000000$stack_len)e80780d2e1030091000000ca010000d4420000cb2100008b5f0000f161ffff54
-    canary	
-    dup	080380d2400080d2010080d2010000d4
-    jmpld	4000005803000014$(endian $ld_start_addr)
-    jmpbin	4000005803000014$entry
-    jmp	00001fd6
-    loop	00000014
-    '
-    else
-        echo "DDexec: Error, this architecture is not supported." >&2
-        exit 1
-    fi
+ddexec(){
+    : 'Main function'
+    init_global
 
     # Program we are trying to run
     # -- unset it first, in case the user exported this variable,
@@ -444,93 +462,95 @@ ddexec()
     unset bin
     read -r bin
 
-    shell=$(readlink -f /proc/$$/exe)
+    # Current running shell
+    local shell=$(readlink -f /proc/$$/exe)
 
     # Make zsh behave somewhat like bash
-    if [ -n "$($shell --version 2> /dev/null | grep zsh)" ]
+    if "$shell" --version 2> /dev/null | grep -q zsh
     then
         setopt SH_WORD_SPLIT
         setopt KSH_ARRAYS
     fi
 
     # Seeker command for searching RAM (tail)
-    seeker=$SEEKER
+    local seeker=$SEEKER
     seeker=$(command -v "$seeker") # Harry Potter vibes? Nah.
-    realname=$(basename $(readlink -f $seeker))
-    if [ -z ${realname##*box*} ] # Busybox / Toybox
+    realname=$(basename $(readlink -f "$seeker"))
+    if [ -z "${realname##*box*}" ] # Busybox / Toybox
     then
         seeker=$(command -v "dd")
     fi
 
     # Interpreter (loader) for the binary
-    interp_off=$(echo -n $bin | search_section bin "" .interp)
+    local interp_off=$(echo -n "$bin" | search_section bin "" .interp)
     if [ -n "$interp_off" ]
     then
         interp_size=$(echo "$interp_off" | cut -d' ' -f2)
         interp_off=$(echo "$interp_off" | cut -d' ' -f1)
-        interp=$(echo $bin | base64 -d | tail -c +$(($interp_off + 1)) |\
+        interp=$(echo "$bin" | base64 -d | tail -c +$((interp_off + 1)) |\
                  head -c $((interp_size - 1)))
     fi
     # Interpreter (loader) for our seeker
-    if [ $USE_INTERP -eq 1 ]
+    if [ "$USE_INTERP" -eq 1 ]
     then
-        interp_off=$(search_section file $seeker .interp)
+        interp_off=$(search_section file "$seeker" .interp)
         if [ -n "$interp_off" ]
         then
-            interp_size=$(echo $interp_off | cut -d' ' -f2)
-            interp_off=$(echo $interp_off | cut -d' ' -f1)
-            interp_=$(tail -c +$(($interp_off + 1)) $seeker |\
+            interp_size=$(echo "$interp_off" | cut -d' ' -f2)
+            interp_off=$(echo "$interp_off" | cut -d' ' -f1)
+            interp_=$(tail -c +$((interp_off + 1)) "$seeker" |\
                       head -c $((interp_size - 1)))
         fi
     fi
 
     # Shell's mappings
     shell_maps=$(cat /proc/$$/maps)
-    shell_base=$(echo "$shell_maps" | grep -w $shell |\
-                head -n1 | cut -d'-' -f1)
+    # Unused => commented out for now
+    #shell_base=$(echo "$shell_maps" | grep -w "$shell" |\
+    #            head -n1 | cut -d'-' -f1)
 
     # The shellcode will be written into the vDSO
     vdso_addr=$((0x$(echo "$shell_maps" | grep -F "[vdso]" | cut -d'-' -f1)))
 
     ## Payload: Shellcode, needed parts of the binary & stack's initial content
     sc=$(craft_shellcode "$@")
-    data=$(echo $sc | cut -d' ' -f2)
-    sc=$(echo $sc | cut -d' ' -f1)
+    data=$(echo "$sc" | cut -d' ' -f2)
+    sc=$(echo "$sc" | cut -d' ' -f1)
     sc_len=$((${#sc} / 2))
 
-    sc=$sc$(echo -n $interp | od -vtx1 | head -n-1 | cut -d' ' -f2- | tr -d ' \n')00
-    if [ "$arch" = "x86_64" ]
+    sc="$sc$(echo -n "$interp" | od -vtx1 | head -n-1 | cut -d' ' -f2- | tr -d ' \n')00"
+    if [ "$ARCH" = x86_64 ]
     then
-        interp_addr=$(printf %016x $((vdso_addr + sc_len)))
+        interp_addr=$(printf %016x "$((vdso_addr + sc_len))")
         sc=${sc/________________/$(endian $interp_addr)}
-    elif [ "$arch" = "aarch64" ]
+    elif [ "$ARCH" = aarch64 ]
     then
         # Relative addressing
         pos=${sc%%_*}
         pos=$((${#pos} / 2))
         rel=$((((((sc_len - pos) >> 2) << 5) | 1) | (16 << 24)))
-        rel=$(endian $(printf %08x $rel))"1f2003d5"
-        sc=${sc/________________/$rel}
+        rel=$(endian "$(printf %08x "$rel")")1f2003d5
+        sc=${sc/________________/"$rel"}
     fi
     sc_len=$((${#sc} / 2))
 
     # Trampoline to jump to the shellcode
-    if [ "$arch" = "x86_64" ]
+    if [ "$ARCH" = x86_64 ]
     then
         jmp="48b8"$(endian $(printf %016x $vdso_addr))"ffe0"
-    elif [ "$arch" = "aarch64" ]
+    elif [ "$ARCH" = aarch64 ]
     then
-        jmp="4000005800001fd6"$(endian $(printf %016x $vdso_addr))
+        jmp="4000005800001fd6$(endian $(printf %016x "$vdso_addr"))"
     fi
 
     # echo $sc $data
-    sc=$(printf $sc | sed 's/../\\x&/g')
-    data=$(printf $data | sed 's/../\\x&/g')
-    jmp=$(printf $jmp | sed 's/../\\x&/g')
+    sc=$(printf "%s" "$sc" | sed 's/../\\x&/g')
+    data=$(printf "%s" "$data" | sed 's/../\\x&/g')
+    jmp=$(printf "%s" "$jmp" | sed 's/../\\x&/g')
 
-    read syscall_info < /proc/self/syscall
-    addr=$(($(echo $syscall_info | cut -d' ' -f9)))
-    exec 0< <(printf $data)
+    read -r syscall_info < /proc/self/syscall
+    addr=$(( $(echo "$syscall_info" | cut -d' ' -f9) ))
+    exec 0< <(printf "$data")
     exec 3>/proc/self/mem
 
     # Arguments' format for the chosen seeker
@@ -541,7 +561,7 @@ ddexec()
         dd) SEEKER_ARGS='bs=1 skip=$offset';;
         hexdump) SEEKER_ARGS='-s $offset';;
         cmp) SEEKER_ARGS='-i $offset /dev/null';;
-        *) 
+        *)
             echo "DDexec: Unknown seeker. Provide its arguments in SEEKER_ARGS."
             exit 1
             ;;
@@ -549,10 +569,10 @@ ddexec()
     fi
 
     # Overwrite vDSO with our shellcode
-    seeker_args=${SEEKER_ARGS/'$offset'/$vdso_addr}
+    seeker_args=${SEEKER_ARGS/'$offset'/"$vdso_addr"}
     seeker_args="$(eval echo -n \"$seeker_args\")"
     $interp_ $seeker $seeker_args <&3 >/dev/null 2>&1
-    printf $sc >&3
+    printf "$sc" >&3
 
     exec 3>&-
     exec 3>/proc/self/mem
@@ -561,7 +581,8 @@ ddexec()
     seeker_args=${SEEKER_ARGS/'$offset'/$addr}
     seeker_args="$(eval echo -n \"$seeker_args\")"
     $interp_ $seeker $seeker_args <&3 >/dev/null 2>&1
-    printf $jmp >&3
+    printf "$jmp" >&3
 }
+
 
 ddexec "$@"
