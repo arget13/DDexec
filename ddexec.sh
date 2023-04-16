@@ -3,14 +3,14 @@
 # Prepend the shellcode with an infinite loop (so you can attach to it with gdb)
 # Then in gdb just use `set $pc+=2' and you will be able to `si'.
 # In ARM64 use `set $pc+=4'.
-if [ -z "$DEBUG" ]; then DEBUG=0; fi
+: "${DEBUG:=0}"
 
 # If the seeker binary is not executable by your user, you may try to run it
 # through the loader (typically ld.so).
-if [ -z "$USE_INTERP" ]; then USE_INTERP=0; fi
+: "${USE_INTERP:=0}"
 
 # Currently tail is the default binary used to lseek() through the mem file.
-if [ -z "$SEEKER" ]; then seeker=tail; else seeker="$SEEKER"; fi
+: "${SEEKER:=tail}"
 
 # Endian conversion
 endian()
@@ -454,6 +454,7 @@ ddexec()
     fi
 
     # Seeker command for searching RAM (tail)
+    seeker=$SEEKER
     seeker=$(command -v "$seeker") # Harry Potter vibes? Nah.
     realname=$(basename $(readlink -f $seeker))
     if [ -z ${realname##*box*} ] # Busybox / Toybox
