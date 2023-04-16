@@ -536,22 +536,16 @@ ddexec()
     # Arguments' format for the chosen seeker
     if [ -z "$SEEKER_ARGS" ]
     then
-        if [ $(basename $seeker) = "tail" ]
-        then
-            SEEKER_ARGS='-c +$(($offset + 1))'
-        elif   [ $(basename $seeker) = "dd" ]
-        then
-            SEEKER_ARGS='bs=1 skip=$offset'
-        elif [ $(basename $seeker) = "hexdump" ]
-        then
-            SEEKER_ARGS='-s $offset'
-        elif [ $(basename $seeker) = "cmp" ]
-        then
-            SEEKER_ARGS='-i $offset /dev/null'
-        else
+        case "$(basename $seeker)" in
+        tail) SEEKER_ARGS='-c +$(($offset + 1))';;
+        dd) SEEKER_ARGS='bs=1 skip=$offset';;
+        hexdump) SEEKER_ARGS='-s $offset';;
+        cmp) SEEKER_ARGS='-i $offset /dev/null';;
+        *) 
             echo "DDexec: Unknown seeker. Provide its arguments in SEEKER_ARGS."
             exit 1
-        fi
+            ;;
+        esac
     fi
 
     # Overwrite vDSO with our shellcode
