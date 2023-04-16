@@ -1,4 +1,8 @@
 # DDexec
+
+[![CI: X64](https://github.com/arget13/DDexec/workflows/CI%20X64/badge.svg)](https://github.com/arget13/DDexec/actions/workflows/main.yml)
+[![CI: ARM](https://github.com/arget13/DDexec/workflows/CI%20ARM/badge.svg)](https://github.com/arget13/DDexec/actions/workflows/arm.yml)
+
 ## Context
 In Linux in order to run a program it must exist as a file, it must be accessible in some way through the file system hierarchy (this is just how `execve()` works). This file may reside on disk or in ram (tmpfs, memfd) but you need a filepath. This has made very easy to control what is run on a Linux system, it makes easy to detect threats and attacker's tools or to prevent them from trying to execute anything of theirs at all (_e. g._ not allowing unprivileged users to place executable files anywhere).
 

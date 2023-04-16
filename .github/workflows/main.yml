@@ -1,5 +1,8 @@
-name: CI
+---
 
+name: "CI X64"
+
+# yamllint disable-line rule:truthy
 on:
   push:
     paths-ignore:
@@ -8,39 +11,46 @@ on:
   pull_request:
     paths-ignore:
       - '*.md'
-      
+
   workflow_dispatch:
     paths-ignore:
       - '*.md'
 
 jobs:
-  alpine_x64:
-    container:
-      image: alpine
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - run: apk update && apk add bash zsh
-      - uses: ./.github/actions/test ash
+  main:
+    name: "X86: ${{ matrix.shell }} on ${{ matrix.image }}"
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [bash, zsh]  # Currently no ash
+        image: [alpine, debian, archlinux]
 
-  debian_x64:
     container:
-      image: debian
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      # - run: apt-get update && apt-get install -y busybox zsh
-      - run: apt-get update && apt-get install -y zsh
-      # - run: ln -sf /bin/busybox /bin/ash
-      - uses: ./.github/actions/test
+      image: ${{ matrix.image }}
 
-  arch_x64:
-    container:
-      image: archlinux
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v3
-      # - run: pacman -Sy --noconfirm busybox zsh which
-      - run: pacman -Sy --noconfirm zsh which
-      # - run: ln -sf /bin/busybox /bin/ash
-      - uses: ./.github/actions/test
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install
+        run: |
+          case "${{ matrix.image }}" in
+            alpine)
+              apk update
+              apk add which bash ${{ matrix.shell }}
+              ;;
+            debian)
+              apt-get update
+              apt-get install -y ${{ matrix.shell }}
+              ;;
+            archlinux)
+              pacman -Sy --noconfirm which ${{ matrix.shell }}
+              ;;
+          esac
+
+      - name: Run
+        uses: ./.github/actions/test
+        with:
+          shell: ${{ matrix.shell }}

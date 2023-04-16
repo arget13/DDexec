@@ -1,7 +1,15 @@
+---
 name: 'Testing...'
 description: 'Runs a bunch of tests'
+
+inputs:
+  shell:
+    description: "Executable name of the shell to use"
+    required: false
+    default: bash
+
 runs:
-  using: "composite"
+  using: composite
   steps:
-    - run: bash .github/actions/test/test.sh
+    - run: bash .github/actions/test/test.sh ${{ inputs.shell }}
       shell: bash
