@@ -1,4 +1,3 @@
-#!/bin/sh
 
 # Prepend the shellcode with an infinite loop (so you can attach to it with gdb)
 # Then in gdb just use `set $pc+=2' and you will be able to `si'.
@@ -442,6 +441,9 @@ else
 fi
 
 # Program we are trying to run
+# -- unset it first, in case the user exported this variable,
+# -- to avoid "argumnent list too long" error on env copy
+unset bin
 read -r bin
 
 shell=$(readlink -f /proc/$$/exe)
