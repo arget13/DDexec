@@ -1,3 +1,4 @@
+#!/bin/sh
 
 # Prepend the shellcode with an infinite loop (so you can attach to it with gdb)
 # Then in gdb just use `set $pc+=2' and you will be able to `si'.
@@ -10,12 +11,6 @@ if [ -z "$USE_INTERP" ]; then USE_INTERP=0; fi
 
 # Currently tail is the default binary used to lseek() through the mem file.
 if [ -z "$SEEKER" ]; then seeker=tail; else seeker="$SEEKER"; fi
-seeker=$(command -v "$seeker") # Harry Potter vibes? Nah.
-realname=$(basename $(readlink -f $seeker))
-if [ -z ${realname##*box*} ] # Busybox / Toybox
-then
-    seeker=$(command -v "dd")
-fi
 
 # Endian conversion
 endian()
@@ -398,166 +393,180 @@ craft_shellcode()
     printf "$sc $writebin$stack"
 }
 
-arch=$(uname -m)
-if [ "$arch" = "x86_64" ]
-then
-    sc_array='prep	4d31c04d89c149f7d041ba32000000
-openprep	4831c04889c6b00248bf________________0f054989c041ba12000000
-stackexe	4831c0b00a48bf$(endian $stack_bottom)be$(endian $stack_size)ba070000000f05
-mrmbin	4831c0b00948bf$(endian $virt)be$(endian $memsz)ba030000000f054831ff48be$(endian $origvirt)48ba$(endian $fsize)4889f80f054829c24801c64885d275f04831c0b00a48bf$(endian $virt)be$(endian $memsz)ba$(endian $perm)0f05
-mrmfile2	4d89c44d31c04d89c149f7d041ba320000004831c0b00948bf$(endian $virt2)be$(endian $diff)ba$(endian $perm)0f054d89e0
-mrmfile	4831c0b00948bf$(endian $virt)be$(endian $memsz)ba$(endian $perm)49b9$(endian $off)0f05
-close	4831c0b0034c89c70f05
-zerobss	4831c0b9$(endian $bss_size)48bf$(endian $bss_addr)f348ab
-stack	48bc$(endian $sp)4831ff4889e6ba$(endian $stack_len)4889f80f0529c24801c685d275f3
-canary	48bb${at_random}64488b04252800000048890380c30864488b042530000000488903
-dup	4831c04889c6b0024889c7b0210f05
-jmpld	48b8$(endian $ld_start_addr)
-jmpbin	48b8$entry
-jmp	ffe0
-loop	ebfe
-'
-elif [ "$arch" = "aarch64" ]
-then
-    sc_array='prep	430680d204008092a50005ca
-openprep	080780d2600c8092420002ca________________010000d4e40300aa430280d2
-stackexe	481c80d24000005803000014$(endian $stack_bottom)4100005803000014$(endian 00000000$stack_size)4200005803000014$(endian 0000000000000007)010000d4
-mrmbin	c81b80d24000005803000014$(endian $virt)4100005803000014$(endian 00000000$memsz)4200005803000014$(endian 0000000000000003)010000d4e80780d24100005803000014$(endian $origvirt)4200005803000014$(endian $fsize)000000ca010000d4420000cb2100008b5f0000f161ffff54481c80d24000005803000014$(endian $virt)4100005803000014$(endian 00000000$memsz)4200005803000014$(endian 00000000$perm)010000d4
-mrmfile2	f30304aa04008092a50005ca430680d2c81b80d24000005803000014$(endian $virt2)4100005803000014$(endian 00000000$diff)4200005803000014$(endian 00000000$perm)010000d4e40313aa
-mrmfile	c81b80d24000005803000014$(endian $virt)4100005803000014$(endian 00000000$memsz)4200005803000014$(endian 00000000$perm)4500005803000014$(endian $off)010000d4
-close	280780d2e00304aa010000d4
-zerobss	4000005803000014$(endian $bss_addr)4100005803000014$(endian 00000000$bss_size)1f8400f8210400d13f0000f1a1ffff54
-stack	4000005803000014$(endian $sp)1f0000914200005803000014$(endian 00000000$stack_len)e80780d2e1030091000000ca010000d4420000cb2100008b5f0000f161ffff54
-canary	
-dup	080380d2400080d2010080d2010000d4
-jmpld	4000005803000014$(endian $ld_start_addr)
-jmpbin	4000005803000014$entry
-jmp	00001fd6
-loop	00000014
-'
-else
-    echo "DDexec: Error, this architecture is not supported." >&2
-    exit 1
-fi
 
-# Program we are trying to run
-# -- unset it first, in case the user exported this variable,
-# -- to avoid "argumnent list too long" error on env copy
-unset bin
-read -r bin
-
-shell=$(readlink -f /proc/$$/exe)
-
-# Make zsh behave somewhat like bash
-if [ -n "$($shell --version 2> /dev/null | grep zsh)" ]
-then
-    setopt SH_WORD_SPLIT
-    setopt KSH_ARRAYS
-fi
-
-# Interpreter (loader) for the binary
-interp_off=$(echo -n $bin | search_section bin "" .interp)
-if [ -n "$interp_off" ]
-then
-    interp_size=$(echo "$interp_off" | cut -d' ' -f2)
-    interp_off=$(echo "$interp_off" | cut -d' ' -f1)
-    interp=$(echo $bin | base64 -d | tail -c +$(($interp_off + 1)) |\
-             head -c $((interp_size - 1)))
-fi
-# Interpreter (loader) for our seeker
-if [ $USE_INTERP -eq 1 ]
-then
-    interp_off=$(search_section file $seeker .interp)
-    if [ -n "interp_off" ]
+ddexec()
+{
+    arch=$(uname -m)
+    if [ "$arch" = "x86_64" ]
     then
-        interp_size=$(echo $interp_off | cut -d' ' -f2)
-        interp_off=$(echo $interp_off | cut -d' ' -f1)
-        interp_=$(tail -c +$(($interp_off + 1)) $seeker |\
-                  head -c $((interp_size - 1)))
-    fi
-fi
-
-# Shell's mappings
-shell_maps=$(cat /proc/$$/maps)
-shell_base=$(echo "$shell_maps" | grep -w $shell |\
-            head -n1 | cut -d'-' -f1)
-
-# The shellcode will be written into the vDSO
-vdso_addr=$((0x$(echo "$shell_maps" | grep -F "[vdso]" | cut -d'-' -f1)))
-
-## Payload: Shellcode, needed parts of the binary & stack's initial content
-sc=$(craft_shellcode "$@")
-data=$(echo $sc | cut -d' ' -f2)
-sc=$(echo $sc | cut -d' ' -f1)
-sc_len=$((${#sc} / 2))
-
-sc=$sc$(echo -n $interp | od -vtx1 | head -n-1 | cut -d' ' -f2- | tr -d ' \n')00
-if [ "$arch" = "x86_64" ]
-then
-    interp_addr=$(printf %016x $((vdso_addr + sc_len)))
-    sc=${sc/________________/$(endian $interp_addr)}
-elif [ "$arch" = "aarch64" ]
-then
-    # Relative addressing
-    pos=${sc%%_*}
-    pos=$((${#pos} / 2))
-    rel=$((((((sc_len - pos) >> 2) << 5) | 1) | (16 << 24)))
-    rel=$(endian $(printf %08x $rel))"1f2003d5"
-    sc=${sc/________________/$rel}
-fi
-sc_len=$((${#sc} / 2))
-
-# Trampoline to jump to the shellcode
-if [ "$arch" = "x86_64" ]
-then
-    jmp="48b8"$(endian $(printf %016x $vdso_addr))"ffe0"
-elif [ "$arch" = "aarch64" ]
-then
-    jmp="4000005800001fd6"$(endian $(printf %016x $vdso_addr))
-fi
-
-# echo $sc $data
-sc=$(printf $sc | sed 's/../\\x&/g')
-data=$(printf $data | sed 's/../\\x&/g')
-jmp=$(printf $jmp | sed 's/../\\x&/g')
-
-read syscall_info < /proc/self/syscall
-addr=$(($(echo $syscall_info | cut -d' ' -f9)))
-exec 0< <(printf $data)
-exec 3>/proc/self/mem
-
-# Arguments' format for the chosen seeker
-if [ -z "$SEEKER_ARGS" ]
-then
-    if [ $(basename $seeker) = "tail" ]
+        sc_array='prep	4d31c04d89c149f7d041ba32000000
+    openprep	4831c04889c6b00248bf________________0f054989c041ba12000000
+    stackexe	4831c0b00a48bf$(endian $stack_bottom)be$(endian $stack_size)ba070000000f05
+    mrmbin	4831c0b00948bf$(endian $virt)be$(endian $memsz)ba030000000f054831ff48be$(endian $origvirt)48ba$(endian $fsize)4889f80f054829c24801c64885d275f04831c0b00a48bf$(endian $virt)be$(endian $memsz)ba$(endian $perm)0f05
+    mrmfile2	4d89c44d31c04d89c149f7d041ba320000004831c0b00948bf$(endian $virt2)be$(endian $diff)ba$(endian $perm)0f054d89e0
+    mrmfile	4831c0b00948bf$(endian $virt)be$(endian $memsz)ba$(endian $perm)49b9$(endian $off)0f05
+    close	4831c0b0034c89c70f05
+    zerobss	4831c0b9$(endian $bss_size)48bf$(endian $bss_addr)f348ab
+    stack	48bc$(endian $sp)4831ff4889e6ba$(endian $stack_len)4889f80f0529c24801c685d275f3
+    canary	48bb${at_random}64488b04252800000048890380c30864488b042530000000488903
+    dup	4831c04889c6b0024889c7b0210f05
+    jmpld	48b8$(endian $ld_start_addr)
+    jmpbin	48b8$entry
+    jmp	ffe0
+    loop	ebfe
+    '
+    elif [ "$arch" = "aarch64" ]
     then
-        SEEKER_ARGS='-c +$(($offset + 1))'
-    elif   [ $(basename $seeker) = "dd" ]
-    then
-        SEEKER_ARGS='bs=1 skip=$offset'
-    elif [ $(basename $seeker) = "hexdump" ]
-    then
-        SEEKER_ARGS='-s $offset'
-    elif [ $(basename $seeker) = "cmp" ]
-    then
-        SEEKER_ARGS='-i $offset /dev/null'
+        sc_array='prep	430680d204008092a50005ca
+    openprep	080780d2600c8092420002ca________________010000d4e40300aa430280d2
+    stackexe	481c80d24000005803000014$(endian $stack_bottom)4100005803000014$(endian 00000000$stack_size)4200005803000014$(endian 0000000000000007)010000d4
+    mrmbin	c81b80d24000005803000014$(endian $virt)4100005803000014$(endian 00000000$memsz)4200005803000014$(endian 0000000000000003)010000d4e80780d24100005803000014$(endian $origvirt)4200005803000014$(endian $fsize)000000ca010000d4420000cb2100008b5f0000f161ffff54481c80d24000005803000014$(endian $virt)4100005803000014$(endian 00000000$memsz)4200005803000014$(endian 00000000$perm)010000d4
+    mrmfile2	f30304aa04008092a50005ca430680d2c81b80d24000005803000014$(endian $virt2)4100005803000014$(endian 00000000$diff)4200005803000014$(endian 00000000$perm)010000d4e40313aa
+    mrmfile	c81b80d24000005803000014$(endian $virt)4100005803000014$(endian 00000000$memsz)4200005803000014$(endian 00000000$perm)4500005803000014$(endian $off)010000d4
+    close	280780d2e00304aa010000d4
+    zerobss	4000005803000014$(endian $bss_addr)4100005803000014$(endian 00000000$bss_size)1f8400f8210400d13f0000f1a1ffff54
+    stack	4000005803000014$(endian $sp)1f0000914200005803000014$(endian 00000000$stack_len)e80780d2e1030091000000ca010000d4420000cb2100008b5f0000f161ffff54
+    canary	
+    dup	080380d2400080d2010080d2010000d4
+    jmpld	4000005803000014$(endian $ld_start_addr)
+    jmpbin	4000005803000014$entry
+    jmp	00001fd6
+    loop	00000014
+    '
     else
-        echo "DDexec: Unknown seeker. Provide its arguments in SEEKER_ARGS."
+        echo "DDexec: Error, this architecture is not supported." >&2
         exit 1
     fi
-fi
 
-# Overwrite vDSO with our shellcode
-seeker_args=${SEEKER_ARGS/'$offset'/$vdso_addr}
-seeker_args="$(eval echo -n \"$seeker_args\")"
-$interp_ $seeker $seeker_args <&3 >/dev/null 2>&1
-printf $sc >&3
+    # Program we are trying to run
+    # -- unset it first, in case the user exported this variable,
+    # -- to avoid "argumnent list too long" error on env copy
+    unset bin
+    read -r bin
 
-exec 3>&-
-exec 3>/proc/self/mem
+    shell=$(readlink -f /proc/$$/exe)
 
-# Write jump instruction where it will be found shortly
-seeker_args=${SEEKER_ARGS/'$offset'/$addr}
-seeker_args="$(eval echo -n \"$seeker_args\")"
-$interp_ $seeker $seeker_args <&3 >/dev/null 2>&1
-printf $jmp >&3
+    # Make zsh behave somewhat like bash
+    if [ -n "$($shell --version 2> /dev/null | grep zsh)" ]
+    then
+        setopt SH_WORD_SPLIT
+        setopt KSH_ARRAYS
+    fi
+
+    # Seeker command for searching RAM (tail)
+    seeker=$(command -v "$seeker") # Harry Potter vibes? Nah.
+    realname=$(basename $(readlink -f $seeker))
+    if [ -z ${realname##*box*} ] # Busybox / Toybox
+    then
+        seeker=$(command -v "dd")
+    fi
+
+    # Interpreter (loader) for the binary
+    interp_off=$(echo -n $bin | search_section bin "" .interp)
+    if [ -n "$interp_off" ]
+    then
+        interp_size=$(echo "$interp_off" | cut -d' ' -f2)
+        interp_off=$(echo "$interp_off" | cut -d' ' -f1)
+        interp=$(echo $bin | base64 -d | tail -c +$(($interp_off + 1)) |\
+                 head -c $((interp_size - 1)))
+    fi
+    # Interpreter (loader) for our seeker
+    if [ $USE_INTERP -eq 1 ]
+    then
+        interp_off=$(search_section file $seeker .interp)
+        if [ -n "interp_off" ]
+        then
+            interp_size=$(echo $interp_off | cut -d' ' -f2)
+            interp_off=$(echo $interp_off | cut -d' ' -f1)
+            interp_=$(tail -c +$(($interp_off + 1)) $seeker |\
+                      head -c $((interp_size - 1)))
+        fi
+    fi
+
+    # Shell's mappings
+    shell_maps=$(cat /proc/$$/maps)
+    shell_base=$(echo "$shell_maps" | grep -w $shell |\
+                head -n1 | cut -d'-' -f1)
+
+    # The shellcode will be written into the vDSO
+    vdso_addr=$((0x$(echo "$shell_maps" | grep -F "[vdso]" | cut -d'-' -f1)))
+
+    ## Payload: Shellcode, needed parts of the binary & stack's initial content
+    sc=$(craft_shellcode "$@")
+    data=$(echo $sc | cut -d' ' -f2)
+    sc=$(echo $sc | cut -d' ' -f1)
+    sc_len=$((${#sc} / 2))
+
+    sc=$sc$(echo -n $interp | od -vtx1 | head -n-1 | cut -d' ' -f2- | tr -d ' \n')00
+    if [ "$arch" = "x86_64" ]
+    then
+        interp_addr=$(printf %016x $((vdso_addr + sc_len)))
+        sc=${sc/________________/$(endian $interp_addr)}
+    elif [ "$arch" = "aarch64" ]
+    then
+        # Relative addressing
+        pos=${sc%%_*}
+        pos=$((${#pos} / 2))
+        rel=$((((((sc_len - pos) >> 2) << 5) | 1) | (16 << 24)))
+        rel=$(endian $(printf %08x $rel))"1f2003d5"
+        sc=${sc/________________/$rel}
+    fi
+    sc_len=$((${#sc} / 2))
+
+    # Trampoline to jump to the shellcode
+    if [ "$arch" = "x86_64" ]
+    then
+        jmp="48b8"$(endian $(printf %016x $vdso_addr))"ffe0"
+    elif [ "$arch" = "aarch64" ]
+    then
+        jmp="4000005800001fd6"$(endian $(printf %016x $vdso_addr))
+    fi
+
+    # echo $sc $data
+    sc=$(printf $sc | sed 's/../\\x&/g')
+    data=$(printf $data | sed 's/../\\x&/g')
+    jmp=$(printf $jmp | sed 's/../\\x&/g')
+
+    read syscall_info < /proc/self/syscall
+    addr=$(($(echo $syscall_info | cut -d' ' -f9)))
+    exec 0< <(printf $data)
+    exec 3>/proc/self/mem
+
+    # Arguments' format for the chosen seeker
+    if [ -z "$SEEKER_ARGS" ]
+    then
+        if [ $(basename $seeker) = "tail" ]
+        then
+            SEEKER_ARGS='-c +$(($offset + 1))'
+        elif   [ $(basename $seeker) = "dd" ]
+        then
+            SEEKER_ARGS='bs=1 skip=$offset'
+        elif [ $(basename $seeker) = "hexdump" ]
+        then
+            SEEKER_ARGS='-s $offset'
+        elif [ $(basename $seeker) = "cmp" ]
+        then
+            SEEKER_ARGS='-i $offset /dev/null'
+        else
+            echo "DDexec: Unknown seeker. Provide its arguments in SEEKER_ARGS."
+            exit 1
+        fi
+    fi
+
+    # Overwrite vDSO with our shellcode
+    seeker_args=${SEEKER_ARGS/'$offset'/$vdso_addr}
+    seeker_args="$(eval echo -n \"$seeker_args\")"
+    $interp_ $seeker $seeker_args <&3 >/dev/null 2>&1
+    printf $sc >&3
+
+    exec 3>&-
+    exec 3>/proc/self/mem
+
+    # Write jump instruction where it will be found shortly
+    seeker_args=${SEEKER_ARGS/'$offset'/$addr}
+    seeker_args="$(eval echo -n \"$seeker_args\")"
+    $interp_ $seeker $seeker_args <&3 >/dev/null 2>&1
+    printf $jmp >&3
+}
+
+ddexec "$@"
