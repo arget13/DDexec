@@ -116,7 +116,7 @@ Despite this, I thought this technique independently in, now almost, its entiret
 
 Either way, I hope I will be able to spread this technique much further, which is what matters.
 
-I would like to thank [Carlos Polop](https://github.com/carlospolop), a great pentester and better friend, for making me think about this subject, and for his helpful feedback and interest, oh and I also owe him the name of the project. I am sure that if you are reading this you have already used his awesome tool [PEASS](https://github.com/carlospolop/PEASS-ng) and found helpful some article in his book [HackTricks](https://book.hacktricks.xyz). I also thank him for helping me with the talk at the [RootedCon 2022](https://rootedcon.com).
+I would like to thank [Carlos Polop](https://github.com/carlospolop), a great pentester and better friend, for making me think about this subject, and for his helpful feedback and interest, oh and I also owe him the name of the project. I am sure that if you are reading this you have already used his awesome tool [PEASS](https://github.com/carlospolop/PEASS-ng) and found helpful some article in his book [HackTricks](https://book.hacktricks.xyz).
 
 ## Now what?
 You may:
