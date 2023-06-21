@@ -1,5 +1,7 @@
-name: CI
+---
+name: "CI ARM"
 
+# yamllint disable-line rule:truthy
 on:
   push:
     paths-ignore:
@@ -8,41 +10,48 @@ on:
   pull_request:
     paths-ignore:
       - '*.md'
-      
+
   workflow_dispatch:
     paths-ignore:
       - '*.md'
 
 jobs:
-  alpine_arm64:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: uraimo/run-on-arch-action@v2
-        with:
-          arch: aarch64
-          distro: alpine_latest
-          run: apk update && apk add bash zsh
-      - uses: ./.github/actions/test
+  arm:
+    name: "ARM64: ${{ matrix.shell }} on ${{ matrix.image }}"
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [bash, zsh]  # Currently no ash
+        image: [alpine, debian, archlinux]
 
-  debian_arm64:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: uraimo/run-on-arch-action@v2
-        with:
-          arch: aarch64
-          distro: bullseye
-          run: apt-get update && apt-get install -y busybox zsh && ln -sf /bin/busybox /bin/ash
-      - uses: ./.github/actions/test
+    env:
+      json-map: '{"alpine": "alpine_latest", "debian": "bullseye", "archlinux": "archarm_latest"}'
 
-  arch_arm64:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v3
-      - uses: uraimo/run-on-arch-action@v2
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: "Install for ${{ matrix.image }}"
+        uses: uraimo/run-on-arch-action@v2
         with:
           arch: aarch64
-          distro: archarm_latest
-          run: pacman -Sy --noconfirm busybox zsh which && ln -sf /bin/busybox /bin/ash
-      - uses: ./.github/actions/test
+          distro: ${{ fromJSON( env.json-map )[matrix.image] }}
+          run: |
+            case "${{ matrix.image }}" in
+              alpine)
+                apk update
+                apk add bash zsh
+                ;;
+              debian)
+                apt-get update
+                apt-get install -y busybox zsh
+                ln -sf /bin/busybox /bin/ash
+                ;;
+              archlinux)
+                pacman -Sy --noconfirm busybox zsh which
+                ln -sf /bin/busybox /bin/ash
+                ;;
+            esac
+            ${{ matrix.shell }} ./.github/actions/test/test.sh ${{ matrix.shell }}
